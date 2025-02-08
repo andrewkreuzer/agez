@@ -32,6 +32,7 @@
         devShells.default = pkgs.mkShell {
           buildInputs = [
             zig.packages.${system}."0.13.0"
+            pkgs.age
           ];
         };
       }
