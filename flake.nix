@@ -30,9 +30,12 @@
       in
       {
         devShells.default = pkgs.mkShell {
-          buildInputs = [
+          buildInputs = with pkgs; [
             zig.packages.${system}."0.13.0"
-            pkgs.age
+            age
+            rage
+            lldb
+            gdb
           ];
         };
       }

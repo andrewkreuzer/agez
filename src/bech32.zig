@@ -25,6 +25,7 @@ const Bech32 = struct {
 };
 
 pub fn encode(out: []u8, hrp: []const u8, data: []const u8) ![]u8 {
+    const lower = std.ascii.toLower;
     if (hrp.len + data.len + 7 > 90) { return error.InvalidLength; }
     if (hrp.len < 1) { return error.InvalidHrpLength; }
 
@@ -33,7 +34,7 @@ pub fn encode(out: []u8, hrp: []const u8, data: []const u8) ![]u8 {
         if (c < 33 or c > 126) {
             return error.InvalidAscii;
         }
-        out[i] = std.ascii.toLower(c);
+        out[i] = lower(c);
         i += 1;
     }
     const _hrp = out[0..i];
@@ -42,7 +43,7 @@ pub fn encode(out: []u8, hrp: []const u8, data: []const u8) ![]u8 {
     i += 1;
 
     for (data) |c| {
-        out[i] = ALPHABET[c];
+        out[i] = ALPHABET[lower(c)];
         i += 1;
     }
 
@@ -241,12 +242,11 @@ const Bech32Error = error{
 };
 
 test "decode" {
-    const case = struct {
+    const cases = [_]struct {
         hrp: []const u8,
         data: []const u8,
         expected: []const u8,
-    };
-    const cases = [_]case{
+    }{
         .{ .hrp = "A", .data = "A12UEL5L", .expected = &[_]u8{} },
         .{ .hrp = "a", .data = "a12uel5l", .expected = &[_]u8{} },
         .{ .hrp = "bech32", .data = "bech321qpz4nc4pe", .expected = &[_]u8{0,1,2} },
@@ -281,12 +281,11 @@ test "decode" {
 }
 
 test "encode" {
-    const case = struct {
+    const cases = [_]struct {
         hrp: []const u8,
         data: []const u8,
         expected: []const u8,
-    };
-    const cases = [_]case{
+    }{
         .{ .hrp = "A", .expected = "a12uel5l", .data = &[_]u8{} },
         .{ .hrp = "a", .expected = "a12uel5l", .data = &[_]u8{} },
         .{
@@ -320,12 +319,11 @@ test "encode" {
 }
 
 test "decode_invalid" {
-    const case = struct {
+    const cases = [_]struct {
         hrp: []const u8,
         data: []const u8,
         expected: Bech32Error,
-    };
-    const cases = [_]case{
+    }{
         .{ .hrp = &[_]u8{0x20}, .data = &[_]u8{0x20} ++ "1nwldj5".*, .expected = error.InvalidAscii },
         .{ .hrp = &[_]u8{0x7f}, .data = &[_]u8{0x7f} ++ "1axkwrx".*, .expected = error.InvalidAscii },
         .{ .hrp = &[_]u8{0x80}, .data = &[_]u8{0x80} ++ "1eym55h".*, .expected = error.InvalidAscii },
@@ -351,12 +349,11 @@ test "decode_invalid" {
 }
 
 test "encode_invalid" {
-    const case = struct {
+    const cases = [_]struct {
         hrp: []const u8,
         data: []const u8,
         expected: Bech32Error,
-    };
-    const cases = [_]case{
+    }{
         .{ .hrp = &[_]u8{0x20}, .data = &[_]u8{}, .expected = error.InvalidAscii },
         .{ .hrp = &[_]u8{0x7f}, .data = &[_]u8{}, .expected = error.InvalidAscii },
         .{ .hrp = &[_]u8{0x80}, .data = &[_]u8{}, .expected = error.InvalidAscii },
@@ -375,25 +372,25 @@ test "encode_invalid" {
 }
 
 test "roundtrip" {
+    const t = std.testing;
+    const hrp = "AGE-SECRET-KEY-";
     const identity = "AGE-SECRET-KEY-1XMWWC06LY3EE5RYTXM9MFLAZ2U56JJJ36S0MYPDRWSVLUL66MV4QX3S7F6";
 
-    const hdr = "AGE-SECRET-KEY-";
-    var buf: [180]u8 = undefined;
-    const decoded = try decode(&buf, hdr, identity);
+    var buf: [90]u8 = undefined;
+    const decoded = try decode(&buf, hrp, identity);
 
-    var buf2: [180]u8 = undefined;
+    var buf2: [90]u8 = undefined;
     const n = try convertBits(&buf2, decoded.data, 5, 8, false);
 
-    var buf3: [180]u8 = undefined;
-    const n2 = try convertBits(&buf3, buf2[0..n], 8, 5, false);
+    var buf3: [90]u8 = undefined;
+    const n2 = try convertBits(&buf3, buf2[0..n], 8, 5, true);
 
-    var buf4: [180]u8 = undefined;
-    const encoded = try encode(&buf4, hdr, buf3[0..n2]);
+    var buf4: [90]u8 = undefined;
+    const encoded = try encode(&buf4, hrp, buf3[0..n2]);
 
     for (encoded) |*c| {
         c.* = std.ascii.toUpper(c.*);
     }
 
-    // TODO: checksum differs
-    try std.testing.expectEqualSlices(u8, encoded[0..encoded.len-6], identity[0..identity.len-7]);
+    try t.expectEqualSlices(u8, encoded, identity);
 }

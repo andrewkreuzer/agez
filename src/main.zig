@@ -1,13 +1,24 @@
 const std = @import("std");
+
 const root = @import("root.zig");
+const cli = @import("cli.zig");
 
 pub fn main() !void {
-    try root.run();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const gpa_allocator = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(gpa_allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+    defer {
+        if (gpa.deinit() == .leak) {
+            std.debug.print("Leak detected\n", .{});
+        }
+    }
+
+    var args = try cli.args(allocator);
+    try root.run(&args);
 }
 
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
+test {
+    _  = cli;
 }
