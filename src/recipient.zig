@@ -41,14 +41,14 @@ pub const Recipient = struct {
         self.state = .initialized;
     }
 
-    /// Decrypts the file key from the reciepients body
+    /// Decrypts the file key from the recipients body
     /// it is the callers responsibility to ensure safety
     /// and deallocation of the decrypted file key
     pub fn unwrap(self: *Self, allocator: Allocator, identity: []const u8) ![]const u8 {
         self.state = .unwrapped;
 
         // derived from the shared secret and salt
-        // decrypts the file key from the reciepients body
+        // decrypts the file key from the recipients body
         var key: [32]u8 = undefined;
         defer std.crypto.utils.secureZero(u8, &key);
 
@@ -57,12 +57,12 @@ pub const Recipient = struct {
         var x25519_secret_key: [32]u8 = undefined;
         defer std.crypto.utils.secureZero(u8, &x25519_secret_key);
 
-        // derived from the reciepients ephemeral share
-        // and the reciepients public key
+        // derived from the recipients ephemeral share
+        // and the recipients public key
         var salt: [64]u8 = undefined;
 
         // derived from the last 16 bytes
-        // of the reciepients body, the Poly
+        // of the recipients body, the Poly
         var tag: [16]u8 = undefined;
 
         // a blank nonce
@@ -71,7 +71,7 @@ pub const Recipient = struct {
         // an empty associated data
         const ad = [_]u8{};
 
-        // space to decode the reciepients bech32 identity
+        // space to decode the recipients bech32 identity
         var identity_buf: [bech32_max_len]u8 = undefined;
 
         const Bech32 = try bech32.decode(&identity_buf, bech32_hrp, identity);
@@ -99,13 +99,13 @@ pub const Recipient = struct {
         return file_key;
     }
 
-    /// Encrypts the file key in the reciepients body
-    /// and populates the reciepients type, args, and body
-    /// caller is responsible for freeing the reciepient
+    /// Encrypts the file key in the recipients body
+    /// and populates the recipients type, args, and body
+    /// caller is responsible for deinit on the reciepient
     pub fn wrap(self: *Self, allocator: Allocator, file_key: []const u8, identity: []const u8) !void {
 
         // derived from the shared secret and salt
-        // encrypts the file key in the reciepients body
+        // encrypts the file key in the recipients body
         var key: [32]u8 = undefined;
         defer std.crypto.utils.secureZero(u8, &key);
 
@@ -125,7 +125,7 @@ pub const Recipient = struct {
         var ciphertext: [16]u8 = undefined;
 
         // derived from the ephemeral share
-        // and the reciepients public key
+        // and the recipients public key
         var salt: [64]u8 = undefined;
 
         // a blank nonce
@@ -137,7 +137,7 @@ pub const Recipient = struct {
         // tag returned from ChaCha20Poly1305
         var tag: [16]u8 = undefined;
 
-        // space to decode the reciepients bech32 identity
+        // space to decode the recipients bech32 identity
         var identity_buf: [bech32_max_len]u8 = undefined;
 
         // base64 encoded ephemeral share

@@ -12,7 +12,7 @@ const Arg = struct {
     short: ?[]const u8 = null,
     long: ?[]const u8 = null,
     value: ?[]const u8 = null,
-    flag: ?bool = null,
+    flag: bool = false,
     description: ?[]const u8 = null,
 
     const ArgType = enum {
@@ -63,6 +63,7 @@ pub fn args(allocator: Allocator) !Args {
 pub const Args = struct {
     const Self = @This();
 
+    help: Arg = Arg.init("-h", "--help", "Prints the help text", .flag),
     encrypt: Arg = Arg.init("-e", "--encrypt", "Encrypt the input (default)", .flag),
     decrypt: Arg = Arg.init("-d", "--decrypt", "Decrypt the input", .flag),
     output: Arg = Arg.init("-o", "--output", "Output to a path OUTPUT", .value),
@@ -76,15 +77,18 @@ pub const Args = struct {
     allocator: ?Allocator = null,
 
     pub fn parse(self: *Self, iter: anytype) anyerror!void {
+        var empty = true;
         while (iter.next()) |arg| {
-            if (self.encrypt.eql(arg)) {
-                if (self.decrypt.flag) |f| {
-                    if (f) return error.EncryptAndDecrypt;
-                }
+            empty = false;
+            if (self.help.eql(arg)) {
+                self.help.flag = true;
+
+            } else if (self.encrypt.eql(arg)) {
+                if (self.decrypt.flag) return error.EncryptAndDecrypt;
                 self.encrypt.flag = true;
 
             } else if (self.decrypt.eql(arg)) {
-                if (self.encrypt.flag) |f| { if (f) return error.EncryptAndDecrypt; }
+                if (self.encrypt.flag) return error.EncryptAndDecrypt;
                 self.decrypt.flag = true;
 
             // TODO: don't assume next is okay to grab
@@ -107,6 +111,45 @@ pub const Args = struct {
                 return error.InvalidArgument;
             }
         }
+
+        if (empty or self.help.flag) {
+            try self.printHelp(self.allocator.?);
+        }
+    }
+
+    pub fn printHelp(_: *Self, allocator: Allocator) !void {
+        const fields = @typeInfo(Self).Struct.fields;
+        const stdout = std.io.getStdOut().writer();
+        var options = try std.ArrayList(u8).initCapacity(allocator, fields.len);
+
+        // this is completely unnecessary, but I wanted to try it out
+        // TODO: figure out the spacing for descriptions
+        const writer = options.writer();
+        inline for (fields) |field| {
+            if (field.default_value) |default| {
+                if (field.type != Arg) { continue; }
+                const arg = @as(*const field.type, @ptrCast(@alignCast(default))).*;
+                try std.fmt.format(writer, "    {s}, {s}    {s}\n", .{arg.short.?, arg.long.?, arg.description.?});
+            }
+        }
+
+        const header_text =
+            \\agez - age encryption
+            \\
+            \\ Usage:
+            \\    agez [--encrypt] (-r RECIPIENT | -R PATH)... [--armor] [-o OUTPUT] [INPUT]
+            \\    agez [--encrypt] --passphrase [--armor] [-o OUTPUT] [INPUT]
+            \\    agez --decrypt [-i PATH]... [-o OUTPUT] [INPUT]
+            ;
+        const options_text = try options.toOwnedSlice();
+        defer allocator.free(options_text);
+
+        try std.fmt.format(stdout, 
+            \\{s}
+            \\
+            \\Options:
+            \\{s}
+            , .{header_text, options_text});
     }
 
     pub fn deinit(self: *Self) void {

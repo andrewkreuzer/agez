@@ -13,9 +13,9 @@ const Recipient = recipient.Recipient;
 
 pub fn run(args: *Args) !void {
     std.debug.print("encrypt?: {any}\n", .{args.encrypt.flag});
-    const file = try std.fs.cwd().openFile("tag.age", .{});
-    var buffered_reader = std.io.bufferedReader(file.reader());
-    const reader = buffered_reader.reader();
+    const file = try std.fs.cwd().openFile("nggyu.webm.age", .{});
+    var buf_reader = std.io.bufferedReader(file.reader());
+    const reader = buf_reader.reader();
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa_allocator = gpa.allocator();
@@ -25,7 +25,7 @@ pub fn run(args: *Args) !void {
 
     var age = AgeFile(@TypeOf(reader)){
         .allocator = allocator,
-        .reader = reader,
+        .r = reader,
     };
     try age.read();
 
@@ -49,16 +49,18 @@ pub fn run(args: *Args) !void {
         std.debug.print("hmac mismatch\n", .{});
     }
 
-    // var plaintext: [4]u8 = undefined;
-    // _ = try file_key.AgeDecrypt(&plaintext, age.payload.?);
+    var plaintext = std.ArrayList(u8).init(allocator);
+    _ = try file_key.ageDecrypt(plaintext.writer(), age.reader());
 
-    var ciphertext = [_]u8{0} ** 37; // TODO: size has to be exact for auth to work
-    _ = try file_key.AgeEncrypt(allocator, &ciphertext, "tests");
+    // var ciphertext = std.ArrayList(u8).init(allocator);
+    // var plaintext_fbs_2 = std.io.fixedBufferStream("yooo");
+    // _ = try file_key.ageEncrypt(ciphertext.writer(), plaintext_fbs_2.reader());
 
-    var plaintext: [5]u8 = undefined; // TODO: size has to be exact for auth to work
-    _ = try file_key.AgeDecrypt(&plaintext, &ciphertext);
+    // var plaintext_2 = std.ArrayList(u8).init(allocator);
+    // var ciphertext_fbs = std.io.fixedBufferStream(ciphertext.items);
+    // _ = try file_key.ageDecrypt(plaintext_2.writer(), ciphertext_fbs.reader());
 
-    std.debug.print("data: {s}\n", .{plaintext[0..5]});
+    // std.debug.print("data: {s}\n", .{plaintext_2.items[0..4]});
 
     for (age.recipients.?) |*r| {
         r.deinit(allocator);
@@ -66,7 +68,9 @@ pub fn run(args: *Args) !void {
 }
 
 test {
+    _  = cli;
     _ = format;
     _ = bech32;
+    _ = recipient;
     _ = @import("key.zig");
 }

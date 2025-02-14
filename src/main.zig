@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const root = @import("root.zig");
+const lib = @import("lib.zig");
 const cli = @import("cli.zig");
 
 pub fn main() !void {
@@ -8,17 +8,13 @@ pub fn main() !void {
     const gpa_allocator = gpa.allocator();
     var arena = std.heap.ArenaAllocator.init(gpa_allocator);
     const allocator = arena.allocator();
-    defer arena.deinit();
     defer {
         if (gpa.deinit() == .leak) {
             std.debug.print("Leak detected\n", .{});
         }
     }
+    defer arena.deinit();
 
     var args = try cli.args(allocator);
-    try root.run(&args);
-}
-
-test {
-    _  = cli;
+    try lib.run(&args);
 }

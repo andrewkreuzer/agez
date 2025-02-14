@@ -6,6 +6,7 @@ const mem = std.mem;
 const hkdf = std.crypto.kdf.hkdf.HkdfSha256;
 const hmac = std.crypto.auth.hmac.sha2.HmacSha256;
 const PathType = std.fs.path.PathType;
+const Reader = io.Reader;
 const Allocator = std.mem.Allocator;
 
 const Recipient = @import("recipient.zig").Recipient;
@@ -26,15 +27,13 @@ pub fn AgeFile(comptime ReaderType: type) type {
 
         // TODO
         filepath: ?PathType = null,
-        reader: ReaderType,
+        r: ReaderType,
 
         version: ?V = null,
         recipients: ?[]Recipient = null,
         mac: ?[]u8 = null,
         header: ?[]u8 = null,
-        payload: ?[]u8 = null,
 
-        const MAX_PAYLOAD_SIZE = 1 << 24; // 2MiB
         const base64_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".*;
 
         const Prefix = union(enum) {
@@ -88,7 +87,7 @@ pub fn AgeFile(comptime ReaderType: type) type {
                 const MAX_HEADER_SIZE = 4096;
                 const MAX_LINE_SIZE = 128;
 
-                reader: ReaderType,
+                r: ReaderType,
 
                 read: usize = 0,
                 line: usize = 0,
@@ -106,11 +105,11 @@ pub fn AgeFile(comptime ReaderType: type) type {
                 /// keeping track of the line number and header.
                 fn next(iter: *Iter) ?Line {
                     var fbs = io.fixedBufferStream(&iter.buf);
-                    var reader = iter.reader;
-                    const writer = fbs.writer();
+                    var r = iter.r;
+                    const w = fbs.writer();
                     const max_size = iter.buf.len;
 
-                    reader.streamUntilDelimiter(writer, '\n', max_size) catch |err| switch (err) {
+                    r.streamUntilDelimiter(w, '\n', max_size) catch |err| switch (err) {
                         error.EndOfStream => {
                             return .{ .prefix = .end, .bytes = fbs.getWritten(), };
                         },
@@ -149,10 +148,10 @@ pub fn AgeFile(comptime ReaderType: type) type {
                 /// ignoring the specified bytes.
                 fn readUntilFalseOrEofIgnore(iter: *Iter, pred: fn (u8) bool, ignore: ?[]const u8) ![]u8 {
                     var fbs = io.fixedBufferStream(&iter.buf);
-                    var reader = iter.reader;
-                    var writer = fbs.writer();
+                    var r = iter.r;
+                    var w = fbs.writer();
                     outer: while (true) {
-                        const byte: u8 = try reader.readByte();
+                        const byte: u8 = try r.readByte();
                         if (byte == '\n') { iter.line += 1; }
 
                         if (iter.reading_header) {
@@ -167,7 +166,7 @@ pub fn AgeFile(comptime ReaderType: type) type {
                             }
                         }
 
-                        try writer.writeByte(byte);
+                        try w.writeByte(byte);
                     }
                 }
             };
@@ -175,7 +174,8 @@ pub fn AgeFile(comptime ReaderType: type) type {
 
         pub fn read(self: *Self) !void {
             const Iter = Iterator();
-            var iter: Iter = .{ .reader = self.reader };
+            var iter: Iter = .{ .r = self.r };
+            var recipients = std.ArrayList(Recipient).init(self.allocator);
 
             while (iter.next()) |line| {
                 switch (line.prefix) {
@@ -223,14 +223,11 @@ pub fn AgeFile(comptime ReaderType: type) type {
                         const body = try self.allocator.alloc(u8, b.len);
                         @memcpy(body, b);
 
-                        var recipients = std.ArrayList(Recipient).init(self.allocator);
                         try recipients.append(.{
                             .type = args.swapRemove(0),
                             .args = try args.toOwnedSlice(),
                             .body = body,
                         });
-
-                        self.recipients = try recipients.toOwnedSlice();
                     },
                     .hmac => {
                         const mac_len = line.bytes.len - 4; // prefix + space
@@ -243,21 +240,15 @@ pub fn AgeFile(comptime ReaderType: type) type {
                         @memcpy(self.header.?[0..header_len], iter.header[0..header_len]);
 
                         iter.reading_header = false;
+                        break;
                     },
                     else => {
-                        if (!iter.reading_header) {
-                            var payload = std.ArrayList(u8).init(self.allocator);
-                            try payload.appendSlice(line.bytes);
-
-                            self.payload = try payload.toOwnedSlice();
-
-                            return;
-                        } else {
-                            return error.Unexpected;
-                        }
+                        return error.Unexpected;
                     },
                 }
             }
+
+            self.recipients = try recipients.toOwnedSlice();
         }
 
         // The valid subset of ascii for age strings is 33-126
@@ -291,6 +282,10 @@ pub fn AgeFile(comptime ReaderType: type) type {
             return std.mem.eql(u8, self.mac.?, encoded);
         }
 
+        pub fn reader(self: *Self) ReaderType {
+            return self.r;
+        }
+
         pub fn deinit(self: *Self) void {
             if (self.recipients) |recipients| {
                 for (recipients) |*r| { r.deinit(self.allocator); }
@@ -302,13 +297,9 @@ pub fn AgeFile(comptime ReaderType: type) type {
             if (self.header) |header| {
                 self.allocator.free(header);
             }
-            if (self.payload) |payload| {
-                self.allocator.free(payload);
-            }
             self.recipients = null;
             self.mac = null;
             self.header = null;
-            self.payload = null;
         }
     };
 }
@@ -319,12 +310,11 @@ test "age file" {
         \\age-encryption.org/v1
         \\-> X25519 TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc
         \\EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U
-        // TODO: multi recipient is failing now
-        // \\-> X25519 ajtqAvDEkVNr2B7zUOtq2mAQXDSBlNrVAuM/dKb5sT4
-        // \\0evrK/HQXVsQ4YaDe+659l5OQzvAzD2ytLGHQLQiqxg
-        // \\-> X25519 0qC7u6AbLxuwnM8tPFOWVtWZn/ZZe7z7gcsP5kgA0FI
-        // \\T/PZg76MmVt2IaLntrxppzDnzeFDYHsHFcnTnhbRLQ8
-        \\--- Vn+54jqiiUCE+WZcEVY3f1sqHjlu/z1LCQ/T7Xm7qI0
+        \\-> X25519 ajtqAvDEkVNr2B7zUOtq2mAQXDSBlNrVAuM/dKb5sT4
+        \\0evrK/HQXVsQ4YaDe+659l5OQzvAzD2ytLGHQLQiqxg
+        \\-> X25519 0qC7u6AbLxuwnM8tPFOWVtWZn/ZZe7z7gcsP5kgA0FI
+        \\T/PZg76MmVt2IaLntrxppzDnzeFDYHsHFcnTnhbRLQ8
+        \\--- UCthUMrk+aJCkWnzueb2xSnd/zj41r4CrMB5SUcz9nM
         \\
     );
     const identity = "AGE-SECRET-KEY-1XMWWC06LY3EE5RYTXM9MFLAZ2U56JJJ36S0MYPDRWSVLUL66MV4QX3S7F6";
@@ -333,13 +323,13 @@ test "age file" {
     const allocator = std.testing.allocator;
     var age_file = AgeFile(@TypeOf(fbs.reader())){
         .allocator = allocator,
-        .reader = fbs.reader(),
+        .r = fbs.reader(),
     };
     defer age_file.deinit();
     try age_file.read();
 
     try t.expect(age_file.version.? == .v1);
-    try t.expect(age_file.recipients.?.len == 1);
+    try t.expect(age_file.recipients.?.len == 3);
     try t.expect(age_file.mac.?.len == 43);
 
     try t.expect(std.mem.eql(u8, age_file.recipients.?[0].type.?, "X25519"));
@@ -372,7 +362,7 @@ test "iterator" {
     );
 
     var iter = AgeFile(@TypeOf(fbs.reader())).Iterator(){
-        .reader = fbs.reader(),
+        .r = fbs.reader(),
     };
 
     try t.expectEqualStrings("age-encryption.org/v1", (iter.next()).?.bytes);
@@ -389,7 +379,7 @@ test "invalid" {
     const allocator = std.testing.allocator;
     var age_file = AgeFile(@TypeOf(fbs.reader())){
         .allocator = allocator,
-        .reader = fbs.reader(),
+        .r = fbs.reader(),
     };
     defer age_file.deinit();
     try t.expectError(error.InvalidAscii, age_file.read());
