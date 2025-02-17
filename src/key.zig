@@ -180,8 +180,7 @@ pub const Key = struct {
     fn incrementNonce(nonce: []u8) !void {
         var i = nonce.len - 2;
         while (i >= 0) {
-            if (nonce[i] == 0xff) { nonce[i] = 0; }
-            else { nonce[i] += 1; }
+            nonce[i] +%= 1;
 
             if (nonce[i] != 0) { break; }
             else if (i == 0) {

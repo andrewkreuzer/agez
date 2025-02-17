@@ -19,6 +19,7 @@ const Arg = struct {
         flag,
         value,
         multivalue,
+        positional,
     };
 
     fn init(short: []const u8, long: []const u8, description: []const u8, argtype: ArgType) Arg {
@@ -73,6 +74,7 @@ pub const Args = struct {
     recipient: Arg = Arg.init("-r", "--recipient", "Encrypt to a specified RECIPIENT. Can be repeated", .multivalue),
     @"recipients-file": Arg = Arg.init("-R", "--recipients-file", "Encrypt to recipients listed at PATH. Can be repeated", .multivalue),
     identity: Arg = Arg.init("-i", "--identity", "Use the identity file at PATH. Can be repeated", .multivalue),
+    input: Arg = Arg.init("", "", "", .positional),
 
     allocator: ?Allocator = null,
 
@@ -106,6 +108,8 @@ pub const Args = struct {
                 self.@"recipients-file".value = iter.next();
             } else if (self.identity.eql(arg)) {
                 self.identity.value = iter.next();
+            } else if (arg.len > 0) {
+                self.input.value = arg;
             } else {
                 std.debug.print("Invalid argument {s}\n", .{arg});
                 return error.InvalidArgument;
@@ -114,6 +118,7 @@ pub const Args = struct {
 
         if (empty or self.help.flag) {
             try self.printHelp(self.allocator.?);
+            exit(0);
         }
     }
 
@@ -129,6 +134,7 @@ pub const Args = struct {
             if (field.default_value) |default| {
                 if (field.type != Arg) { continue; }
                 const arg = @as(*const field.type, @ptrCast(@alignCast(default))).*;
+                if (arg.type == .positional) { continue; }
                 try std.fmt.format(writer, "    {s}, {s}    {s}\n", .{arg.short.?, arg.long.?, arg.description.?});
             }
         }

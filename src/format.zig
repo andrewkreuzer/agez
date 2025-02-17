@@ -240,6 +240,7 @@ pub fn AgeFile(comptime ReaderType: type) type {
                         @memcpy(self.header.?[0..header_len], iter.header[0..header_len]);
 
                         iter.reading_header = false;
+                        self.recipients = try recipients.toOwnedSlice();
                         break;
                     },
                     else => {
@@ -247,8 +248,6 @@ pub fn AgeFile(comptime ReaderType: type) type {
                     },
                 }
             }
-
-            self.recipients = try recipients.toOwnedSlice();
         }
 
         // The valid subset of ascii for age strings is 33-126

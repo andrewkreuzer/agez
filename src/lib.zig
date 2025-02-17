@@ -1,9 +1,13 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const AnyReader = std.io.AnyReader;
+const AnyWriter = std.io.AnyWriter;
 const File = std.fs.File;
 
+const bech32 = @import("bech32.zig");
 const cli = @import("cli.zig");
 const format = @import("format.zig");
-const bech32 = @import("bech32.zig");
+const Io = @import("io.zig");
 const recipient = @import("recipient.zig");
 
 const Args = cli.Args;
@@ -11,17 +15,24 @@ const AgeFile = format.AgeFile;
 const Key = @import("key.zig").Key;
 const Recipient = recipient.Recipient;
 
-pub fn run(args: *Args) !void {
-    std.debug.print("encrypt?: {any}\n", .{args.encrypt.flag});
-    const file = try std.fs.cwd().openFile("nggyu.webm.age", .{});
-    var buf_reader = std.io.bufferedReader(file.reader());
-    const reader = buf_reader.reader();
+pub fn encrypt(
+    allocator: Allocator,
+    io: *Io,
+    args: Args
+) !void {
+    _ = allocator;
+    _ = io;
+    _ = args;
+    return undefined;
+}
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const gpa_allocator = gpa.allocator();
-
-    var arena = std.heap.ArenaAllocator.init(gpa_allocator);
-    const allocator = arena.allocator();
+pub fn decrypt(
+    allocator: Allocator,
+    io: *Io,
+    args: Args
+) !void {
+    const reader = io.reader();
+    const writer = io.writer();
 
     var age = AgeFile(@TypeOf(reader)){
         .allocator = allocator,
@@ -29,7 +40,10 @@ pub fn run(args: *Args) !void {
     };
     try age.read();
 
-    const identity = "AGE-SECRET-KEY-1XMWWC06LY3EE5RYTXM9MFLAZ2U56JJJ36S0MYPDRWSVLUL66MV4QX3S7F6";
+    var identity_buf = [_]u8{0} ** 90;
+    const identity = try Io.identity(&identity_buf, args);
+    defer std.crypto.utils.secureZero(u8, identity);
+
     var file_key: Key = blk: {
         for (age.recipients.?) |*r| {
             if (std.mem.eql(u8, r.type.?, Recipient.x25519_recipient_type)) {
@@ -49,23 +63,16 @@ pub fn run(args: *Args) !void {
         std.debug.print("hmac mismatch\n", .{});
     }
 
-    var plaintext = std.ArrayList(u8).init(allocator);
-    _ = try file_key.ageDecrypt(plaintext.writer(), age.reader());
-
-    // var ciphertext = std.ArrayList(u8).init(allocator);
-    // var plaintext_fbs_2 = std.io.fixedBufferStream("yooo");
-    // _ = try file_key.ageEncrypt(ciphertext.writer(), plaintext_fbs_2.reader());
-
-    // var plaintext_2 = std.ArrayList(u8).init(allocator);
-    // var ciphertext_fbs = std.io.fixedBufferStream(ciphertext.items);
-    // _ = try file_key.ageDecrypt(plaintext_2.writer(), ciphertext_fbs.reader());
-
-    // std.debug.print("data: {s}\n", .{plaintext_2.items[0..4]});
+    _ = try file_key.ageDecrypt(writer, age.reader());
 
     for (age.recipients.?) |*r| {
         r.deinit(allocator);
     }
 }
+
+const Error = error {
+    MissingIdentity,
+};
 
 test {
     _  = cli;
