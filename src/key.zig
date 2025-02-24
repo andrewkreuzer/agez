@@ -6,7 +6,7 @@ const Allocator = @import("std").mem.Allocator;
 
 pub const Key = struct {
     const Self = @This();
-    K: []u8,
+    k: []u8,
 
     const nonce_length = 16;
     const chacha_tag_length = ChaCha20Poly1305.tag_length;
@@ -18,35 +18,43 @@ pub const Key = struct {
     /// the caller must call deinit to free the memory securely
     pub fn init(allocator: Allocator, k: []const u8) !Key {
         return .{
-            .K = try allocator.dupe(u8, k),
+            .k = try allocator.dupe(u8, k),
         };
+    }
+
+    /// Allocates a new Key with the provided len
+    /// the caller must call deinit to free the memory securely
+    pub fn initRandom(allocator: Allocator, len: usize) !Key {
+        const k: Key = .{ .k = try allocator.alloc(u8, len) };
+        _ = std.os.linux.getrandom(k.k.ptr, len, 0x0002);
+        return k;
     }
 
     /// Deallocates a Key ensuring the key
     /// is zeroed before freeing the memory
     pub fn deinit(self: *Self, allocator: Allocator) void {
-        std.crypto.utils.secureZero(u8, self.K);
-        allocator.free(self.K);
+        std.crypto.utils.secureZero(u8, self.k);
+        allocator.free(self.k);
     }
 
     /// return a reference to the key
     pub fn key(self: *const Self) []const u8 {
-        return self.K;
+        return self.k;
     }
 
     /// Encrypts the message using ChaCha20Poly1305
     /// using age's encryption scheme and returns
     /// the nonce, ciphertext, and tag in payload
     pub fn ageEncrypt(
-        self: *Self,
-        payload: anytype,
-        message: anytype,
+        self: *const Self,
+        reader: anytype,
+        writer: anytype,
     ) !void {
         comptime {
-            if (!@hasDecl(@TypeOf(message), "read")) {
+            if (!@hasDecl(@TypeOf(reader), "read")) {
                 @compileError("AgeEncrypt message must implement read");
             }
-            if (!@hasDecl(@TypeOf(payload), "write")) {
+            if (!@hasDecl(@TypeOf(writer), "write")) {
                 @compileError("AgeEncrypt payload must implement read");
             }
         }
@@ -83,10 +91,10 @@ pub const Key = struct {
         const k = hkdf.extract(&key_nonce, self.key());
         hkdf.expand(&encryption_key, "payload", k);
 
-        _ = try payload.write(&key_nonce);
+        _ = try writer.write(&key_nonce);
 
         while (true) {
-            const read = try message.read(&read_buffer);
+            const read = try reader.read(&read_buffer);
             if (read == 0) { break; }
             if (read < read_buffer.len) {
                 nonce[nonce.len-1] = 0x01;
@@ -101,8 +109,8 @@ pub const Key = struct {
                 encryption_key
             );
 
-            _ = try payload.write(write_buffer[0..read]);
-            _ = try payload.write(&tag);
+            _ = try writer.write(write_buffer[0..read]);
+            _ = try writer.write(&tag);
             try incrementNonce(&nonce);
         }
     }
@@ -111,14 +119,14 @@ pub const Key = struct {
     /// and returns the plaintext in message
     pub fn ageDecrypt(
         self: *Self,
-        message: anytype,
-        payload: anytype,
+        reader: anytype,
+        writer: anytype,
     ) anyerror!void {
         comptime {
-            if (!@hasDecl(@TypeOf(payload), "read")) {
+            if (!@hasDecl(@TypeOf(reader), "read")) {
                 @compileError("AgeDecrypt payload must implement read");
             }
-            if (!@hasDecl(@TypeOf(message), "write")) {
+            if (!@hasDecl(@TypeOf(writer), "write")) {
                 @compileError("AgeDecrypt message must implement write");
             }
         }
@@ -149,14 +157,14 @@ pub const Key = struct {
         var read_buffer = [_]u8{0} ** (age_chunk_size + chacha_tag_length);
         var write_buffer = [_]u8{0} ** age_chunk_size;
 
-        const key_nonce_read = try payload.read(&key_nonce);
+        const key_nonce_read = try reader.read(&key_nonce);
         if (key_nonce_read != nonce_length) { return error.InvalidKeyNonce; }
 
-        const k = hkdf.extract(&key_nonce, self.K);
+        const k = hkdf.extract(&key_nonce, self.k);
         hkdf.expand(&encryption_key, "payload", k);
 
         while (true) {
-            const read = try payload.read(&read_buffer);
+            const read = try reader.read(&read_buffer);
             if (read == 0) { break; }
             if (read < age_chunk_size) {
                 nonce[nonce.len-1] = 0x01;
@@ -172,7 +180,7 @@ pub const Key = struct {
                 nonce,
                 encryption_key
             );
-            _ = try message.write(write_buffer[0..read-chacha_tag_length]);
+            _ = try writer.write(write_buffer[0..read-chacha_tag_length]);
             try incrementNonce(&nonce);
         }
     }
@@ -233,7 +241,9 @@ test "round trip" {
     };
 
     for (cases) |c| {
-        var key = try Key.init(allocator, c.key);
+        var key: Key = .{
+            .k = try allocator.dupe(u8, c.key),
+        };
         defer key.deinit(allocator);
 
         var plaintext_fbs = std.io.fixedBufferStream(c.plaintext);
@@ -249,11 +259,11 @@ test "round trip" {
         var out_fbs = std.io.fixedBufferStream(out);
         defer allocator.free(out);
 
-        _ = try key.ageEncrypt(ciphertext_fbs.writer(), plaintext_fbs.reader());
+        _ = try key.ageEncrypt(plaintext_fbs.reader(), ciphertext_fbs.writer());
 
         ciphertext_fbs.reset();
 
-        _ = try key.ageDecrypt(out_fbs.writer(), ciphertext_fbs.reader());
+        _ = try key.ageDecrypt(ciphertext_fbs.reader(), out_fbs.writer());
 
         try std.testing.expectEqualSlices(u8, out, c.plaintext);
     }

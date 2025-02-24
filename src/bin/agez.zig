@@ -1,9 +1,9 @@
 const std = @import("std");
 const exit = std.posix.exit;
 
-const cli = @import("cli.zig");
-const lib = @import("lib.zig");
-const Io = @import("io.zig");
+const lib = @import("lib");
+const cli = lib.cli;
+const Io = lib.Io;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -17,7 +17,7 @@ pub fn main() !void {
     var io = try Io.init(args);
     defer io.deinit();
 
-    if (args.decrypt.flag) {
+    if (args.decrypt.flag()) {
         try lib.decrypt(allocator, &io, args);
     } else {
         try lib.encrypt(allocator, &io, args);

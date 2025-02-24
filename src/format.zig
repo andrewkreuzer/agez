@@ -8,8 +8,11 @@ const hmac = std.crypto.auth.hmac.sha2.HmacSha256;
 const PathType = std.fs.path.PathType;
 const Reader = io.Reader;
 const Allocator = std.mem.Allocator;
+const AllocatorError = std.mem.Allocator.Error;
 
+const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
+const RecipientType = Recipient.Type;
 
 const FormatError = error{
     Unexpected,
@@ -19,7 +22,7 @@ const FormatError = error{
     // UnsupportedVersion,
 };
 
-pub fn AgeFile(comptime ReaderType: type) type {
+pub fn AgeFile(comptime ReaderType: type, comptime WriterType: type) type {
     return struct {
         const Self = @This();
 
@@ -28,6 +31,7 @@ pub fn AgeFile(comptime ReaderType: type) type {
         // TODO
         filepath: ?PathType = null,
         r: ReaderType,
+        w: WriterType,
 
         version: ?V = null,
         recipients: ?[]Recipient = null,
@@ -62,7 +66,7 @@ pub fn AgeFile(comptime ReaderType: type) type {
         };
 
         /// The version of the age file.
-        const V = union(enum) {
+        const V = enum {
             pub const prefix = "age-encryption.org/";
 
             v1,
@@ -73,6 +77,13 @@ pub fn AgeFile(comptime ReaderType: type) type {
                     return .v1;
                 }
                 return .none;
+            }
+
+            fn toString(self: V) []const u8 {
+                switch (self) {
+                    .v1 => return prefix ++ "v1",
+                    .none => return "",
+                }
             }
 
             fn eql(self: V, str: []u8) bool {
@@ -223,8 +234,10 @@ pub fn AgeFile(comptime ReaderType: type) type {
                         const body = try self.allocator.alloc(u8, b.len);
                         @memcpy(body, b);
 
+                        const recipient_type = args.swapRemove(0);
+                        defer self.allocator.free(recipient_type);
                         try recipients.append(.{
-                            .type = args.swapRemove(0),
+                            .type = try RecipientType.fromString(recipient_type),
                             .args = try args.toOwnedSlice(),
                             .body = body,
                         });
@@ -250,6 +263,36 @@ pub fn AgeFile(comptime ReaderType: type) type {
             }
         }
 
+        pub fn write(self: *Self, fk: *const Key) !void {
+            var recipients = std.ArrayList(u8).init(self.allocator);
+            defer recipients.deinit();
+            var rwriter = recipients.writer();
+            for (self.recipients.?) |*r| {
+                const rstring = try r.toString(self.allocator);
+                _ = try rwriter.write(rstring);
+                self.allocator.free(rstring);
+            }
+
+            const header = try std.fmt.allocPrint(
+                self.allocator,
+                \\{s}
+                \\{s}
+                \\---
+            ,.{self.version.?.toString(),recipients.items});
+
+            self.mac = try self.generate_hmac(
+                self.allocator,
+                header,
+                fk,
+            );
+
+            _ = try self.w.write(header);
+            _ = try self.w.write(" ");
+            _ = try self.w.write(self.mac.?);
+            _ = try self.w.write("\n");
+            self.allocator.free(header);
+        }
+
         // The valid subset of ascii for age strings is 33-126
         // but we include 32 (space) for convenience
         fn isValidAscii(c: u8) bool {
@@ -264,13 +307,36 @@ pub fn AgeFile(comptime ReaderType: type) type {
             return c != '\n';
         }
 
-        pub fn verify_hmac(self: *Self, file_key: []const u8) bool {
+        pub fn generate_hmac(
+            self: *Self,
+            allocator: Allocator,
+            header: []const u8,
+            fk: *const Key
+        ) AllocatorError![]u8 {
+            _ = self;
             const salt = [_]u8{};
             var buf_hmac_key = [_]u8{0} ** 32;
             var buf_header_hmac = [_]u8{0} ** 32;
             var buf_encode = [_]u8{0} ** 64;
 
-            const k = hkdf.extract(&salt, file_key);
+            const k = hkdf.extract(&salt, fk.key());
+            hkdf.expand(&buf_hmac_key, "header", k);
+            hmac.create(&buf_header_hmac, header, &buf_hmac_key);
+
+            const encoder = std.base64.Base64Encoder.init(base64_alphabet, null);
+            const hmac_padded_len = encoder.calcSize(buf_header_hmac.len);
+            const encoded = encoder.encode(buf_encode[0..hmac_padded_len], &buf_header_hmac);
+
+            return allocator.dupe(u8, encoded);
+        }
+
+        pub fn verify_hmac(self: *Self, fk: *Key) bool {
+            const salt = [_]u8{};
+            var buf_hmac_key = [_]u8{0} ** 32;
+            var buf_header_hmac = [_]u8{0} ** 32;
+            var buf_encode = [_]u8{0} ** 64;
+
+            const k = hkdf.extract(&salt, fk.key());
             hkdf.expand(&buf_hmac_key, "header", k);
             hmac.create(&buf_header_hmac, self.header.?, &buf_hmac_key);
 
@@ -281,8 +347,14 @@ pub fn AgeFile(comptime ReaderType: type) type {
             return std.mem.eql(u8, self.mac.?, encoded);
         }
 
-        pub fn reader(self: *Self) ReaderType {
-            return self.r;
+        pub fn file_key(self: *Self, identity: []const u8) !Key {
+            for (self.recipients.?) |*r| {
+                return r.unwrap(self.allocator, identity) catch |err| switch (err) {
+                    error.AuthenticationFailed => { continue; },
+                    else => return err,
+                };
+            }
+            return error.AuthenticationFailed;
         }
 
         pub fn deinit(self: *Self) void {
@@ -305,6 +377,9 @@ pub fn AgeFile(comptime ReaderType: type) type {
 
 test "age file" {
     const t = std.testing;
+    const bech32 = @import("bech32.zig");
+    const X25519 = std.crypto.dh.X25519;
+    const null_writer = std.io.null_writer;
     var fbs = io.fixedBufferStream(
         \\age-encryption.org/v1
         \\-> X25519 TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc
@@ -320,9 +395,13 @@ test "age file" {
     const test_file_key = "YELLOW SUBMARINE";
 
     const allocator = std.testing.allocator;
-    var age_file = AgeFile(@TypeOf(fbs.reader())){
+    var age_file = AgeFile(
+        @TypeOf(fbs.reader()),
+        @TypeOf(null_writer),
+    ){
         .allocator = allocator,
         .r = fbs.reader(),
+        .w = null_writer,
     };
     defer age_file.deinit();
     try age_file.read();
@@ -331,28 +410,34 @@ test "age file" {
     try t.expect(age_file.recipients.?.len == 3);
     try t.expect(age_file.mac.?.len == 43);
 
-    try t.expect(std.mem.eql(u8, age_file.recipients.?[0].type.?, "X25519"));
+    try t.expect(age_file.recipients.?[0].type == .X25519);
     try t.expect(age_file.recipients.?[0].args != null);
     try t.expect(age_file.recipients.?[0].body != null);
-    try t.expect(age_file.recipients.?[0].state == .uninitialized);
 
-    try age_file.recipients.?[0].init();
-    try t.expect(age_file.recipients.?[0].state == .initialized);
+    var file_key = try age_file.recipients.?[0].unwrap(allocator, identity);
+    defer file_key.deinit(allocator);
 
-    const file_key = try age_file.recipients.?[0].unwrap(allocator, identity);
     try t.expect(age_file.recipients.?[0].state == .unwrapped);
-    defer allocator.free(file_key);
 
-    try t.expectEqualSlices(u8, test_file_key, file_key);
-    try t.expect(age_file.verify_hmac(file_key));
-    try age_file.recipients.?[0].wrap(allocator, file_key, identity);
-    defer age_file.recipients.?[0].deinit(allocator);
+    try t.expectEqualSlices(u8, test_file_key, file_key.key());
+    try t.expect(age_file.verify_hmac(&file_key));
+
+
+    var identity_buf: [90]u8 = undefined;
+    const Bech32 = try bech32.decode(&identity_buf, "AGE-SECRET-KEY-", identity);
+
+    var x25519_secret_key: [32]u8 = undefined;
+    _ = try bech32.convertBits(&x25519_secret_key, Bech32.data, 5, 8, false);
+    const public_key: [32]u8 = try X25519.recoverPublicKey(x25519_secret_key);
+
+    try age_file.recipients.?[0].wrap(allocator, file_key, public_key);
 
     try t.expect(age_file.recipients.?[0].state == .wrapped);
 }
 
 test "iterator" {
     const t = std.testing;
+    const null_writer = std.io.null_writer;
     var fbs = io.fixedBufferStream(
         \\age-encryption.org/v1
         \\-> X25519 TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc
@@ -360,7 +445,10 @@ test "iterator" {
         \\--- Vn+54jqiiUCE+WZcEVY3f1sqHjlu/z1LCQ/T7Xm7qI0
     );
 
-    var iter = AgeFile(@TypeOf(fbs.reader())).Iterator(){
+    var iter = AgeFile(
+        @TypeOf(fbs.reader()),
+        @TypeOf(null_writer),
+    ).Iterator(){
         .r = fbs.reader(),
     };
 
@@ -373,12 +461,17 @@ test "iterator" {
 
 test "invalid" {
     const t = std.testing;
+    const null_writer = std.io.null_writer;
     var fbs = io.fixedBufferStream("age-encryption.org/v1\n-> \x7f\n");
 
     const allocator = std.testing.allocator;
-    var age_file = AgeFile(@TypeOf(fbs.reader())){
+    var age_file = AgeFile(
+        @TypeOf(fbs.reader()),
+        @TypeOf(null_writer),
+    ){
         .allocator = allocator,
         .r = fbs.reader(),
+        .w = null_writer,
     };
     defer age_file.deinit();
     try t.expectError(error.InvalidAscii, age_file.read());

@@ -8,29 +8,60 @@ const ArgIteratorGeneral = process.ArgIteratorGeneral;
 const Allocator = std.mem.Allocator;
 
 const Arg = struct {
-    type: ?ArgType = null,
     short: ?[]const u8 = null,
     long: ?[]const u8 = null,
-    value: ?[]const u8 = null,
-    flag: bool = false,
+    arg: ?ArgType = null,
     description: ?[]const u8 = null,
 
-    const ArgType = enum {
-        flag,
-        value,
-        multivalue,
-        positional,
+    const ArgType = union(enum) {
+        positional: []const u8,
+        value: []const u8,
+        multivalue: []const []const u8,
+        flag: bool,
+        none,
     };
 
-    fn init(short: []const u8, long: []const u8, description: []const u8, argtype: ArgType) Arg {
+    fn init(short: []const u8, long: []const u8, description: []const u8) Arg {
         comptime {
             return .{
                 .short = short,
                 .long = long,
-                .type = argtype,
                 .description = description,
             };
         }
+    }
+
+    fn set(self: *Arg, T: anytype) !void {
+        switch(@TypeOf(T)) {
+            bool => self.arg = .{ .flag = T },
+            [:0]const u8 => self.arg = .{ .value = T },
+            [][:0]const u8 => self.arg = .{ .multivalue = T },
+            else => {
+                std.debug.print("Failed to set value: {any}\n", .{@TypeOf(T)});
+                return error.FailedSettingValue;
+            }
+        }
+    }
+
+    pub fn flag(self: Arg) bool {
+        if (self.arg) |arg| switch (arg) {
+            .flag => |b| return b,
+            else => return false,
+        } else return false;
+    }
+
+    pub fn value(self: Arg) ?[]const u8 {
+        if (self.arg) |arg| switch (arg) {
+            .value, .positional => |v| return v,
+            else => return null,
+        } else return null;
+    }
+
+    pub fn values(self: Arg) ?[]const []const u8 {
+        if (self.arg) |arg| switch (arg) {
+            .multivalue => |vs| return vs,
+            else => return null,
+        } else return null;
     }
 
     fn eql(self: Arg, arg: []const u8) bool {
@@ -42,6 +73,8 @@ const Arg = struct {
 const ArgError = error{
     InvalidArgument,
     EncryptAndDecrypt,
+    IdRequiresEncryptDecrypt,
+    FailedSettingValue,
 };
 
 pub fn args(allocator: Allocator) !Args {
@@ -52,6 +85,10 @@ pub fn args(allocator: Allocator) !Args {
     var a: Args =  .{ .allocator = allocator };
     a.parse(&iter) catch |err| switch (err) {
         error.InvalidArgument => exit(1),
+        error.IdRequiresEncryptDecrypt => {
+            std.debug.print("-i/--identity requires either -e/--encrypt or -d/--decrypt\n", .{});
+            exit(1);
+        },
         error.EncryptAndDecrypt => {
             std.debug.print("Incompatible arguments: --encrypt and --decrypt\n", .{});
             exit(1);
@@ -64,59 +101,82 @@ pub fn args(allocator: Allocator) !Args {
 pub const Args = struct {
     const Self = @This();
 
-    help: Arg = Arg.init("-h", "--help", "Prints the help text", .flag),
-    encrypt: Arg = Arg.init("-e", "--encrypt", "Encrypt the input (default)", .flag),
-    decrypt: Arg = Arg.init("-d", "--decrypt", "Decrypt the input", .flag),
-    output: Arg = Arg.init("-o", "--output", "Output to a path OUTPUT", .value),
-    armor: Arg = Arg.init("-a", "--armor", "Encrypt to a PEM encoded format", .flag),
-    passphrase: Arg = Arg.init("-p", "--passphrase", "Encrypt with a passphrase", .value),
-    // TODO: repeats
-    recipient: Arg = Arg.init("-r", "--recipient", "Encrypt to a specified RECIPIENT. Can be repeated", .multivalue),
-    @"recipients-file": Arg = Arg.init("-R", "--recipients-file", "Encrypt to recipients listed at PATH. Can be repeated", .multivalue),
-    identity: Arg = Arg.init("-i", "--identity", "Use the identity file at PATH. Can be repeated", .multivalue),
-    input: Arg = Arg.init("", "", "", .positional),
+    help: Arg = Arg.init("-h", "--help", "Prints the help text"),
+    encrypt: Arg = Arg.init("-e", "--encrypt", "Encrypt the input (default)"),
+    decrypt: Arg = Arg.init("-d", "--decrypt", "Decrypt the input"),
+    output: Arg = Arg.init("-o", "--output", "Output to a path OUTPUT"),
+    armor: Arg = Arg.init("-a", "--armor", "Encrypt to a PEM encoded format"),
+    passphrase: Arg = Arg.init("-p", "--passphrase", "Encrypt with a passphrase"),
+    recipient: Arg = Arg.init("-r", "--recipient", "Encrypt to a specified RECIPIENT. Can be repeated"),
+    recipients_file: Arg = Arg.init("-R", "--recipients-file", "Encrypt to recipients listed at PATH. Can be repeated"),
+    identity: Arg = Arg.init("-i", "--identity", "Use the identity file at PATH. Can be repeated"),
+    input: Arg = Arg.init("", "", ""),
 
     allocator: ?Allocator = null,
 
     pub fn parse(self: *Self, iter: anytype) anyerror!void {
         var empty = true;
+        var recipients = std.ArrayList([:0]const u8).init(self.allocator.?);
+        var recipients_file = std.ArrayList([:0]const u8).init(self.allocator.?);
+        var identity = std.ArrayList([:0]const u8).init(self.allocator.?);
         while (iter.next()) |arg| {
             empty = false;
             if (self.help.eql(arg)) {
-                self.help.flag = true;
+                try self.help.set(true);
 
             } else if (self.encrypt.eql(arg)) {
-                if (self.decrypt.flag) return error.EncryptAndDecrypt;
-                self.encrypt.flag = true;
+                if (self.decrypt.flag()) return error.EncryptAndDecrypt;
+                try self.encrypt.set(true);
 
             } else if (self.decrypt.eql(arg)) {
-                if (self.encrypt.flag) return error.EncryptAndDecrypt;
-                self.decrypt.flag = true;
+                if (self.encrypt.flag()) return error.EncryptAndDecrypt;
+                try self.decrypt.set(true);
 
             // TODO: don't assume next is okay to grab
             } else if (self.output.eql(arg)) {
-                self.output.value = iter.next();
+                const output = iter.next() orelse return error.InvalidArgument;
+                try self.output.set(output);
 
             } else if (self.armor.eql(arg)) {
-                self.armor.flag = true;
+                try self.armor.set(true);
 
             } else if (self.passphrase.eql(arg)) {
-                self.passphrase.value = iter.next();
+                try self.passphrase.set(true);
+
             } else if (self.recipient.eql(arg)) {
-                self.recipient.value = iter.next();
-            } else if (self.@"recipients-file".eql(arg)) {
-                self.@"recipients-file".value = iter.next();
+                const recipient = iter.next() orelse return error.InvalidArgument;
+                try recipients.append(recipient);
+
+            } else if (self.recipients_file.eql(arg)) {
+                const recipient_file = iter.next() orelse return error.InvalidArgument;
+                try recipients_file.append(recipient_file);
+
             } else if (self.identity.eql(arg)) {
-                self.identity.value = iter.next();
+                const id = iter.next() orelse return error.InvalidArgument;
+                try identity.append(id);
+
             } else if (arg.len > 0) {
-                self.input.value = arg;
+                self.input.arg = .{ .positional = arg };
+
             } else {
                 std.debug.print("Invalid argument {s}\n", .{arg});
                 return error.InvalidArgument;
             }
         }
 
-        if (empty or self.help.flag) {
+        try self.recipient.set(try recipients.toOwnedSlice());
+        try self.recipients_file.set(try recipients_file.toOwnedSlice());
+        try self.identity.set(try identity.toOwnedSlice());
+
+        if (
+            !self.encrypt.flag()
+            and !self.decrypt.flag()
+            and self.identity.arg.?.multivalue.len > 0
+        ) {
+            return error.IdRequiresEncryptDecrypt;
+        }
+
+        if (empty or self.help.flag()) {
             try self.printHelp(self.allocator.?);
             exit(0);
         }
@@ -125,19 +185,6 @@ pub const Args = struct {
     pub fn printHelp(_: *Self, allocator: Allocator) !void {
         const fields = @typeInfo(Self).Struct.fields;
         const stdout = std.io.getStdOut().writer();
-        var options = try std.ArrayList(u8).initCapacity(allocator, fields.len);
-
-        // this is completely unnecessary, but I wanted to try it out
-        // TODO: figure out the spacing for descriptions
-        const writer = options.writer();
-        inline for (fields) |field| {
-            if (field.default_value) |default| {
-                if (field.type != Arg) { continue; }
-                const arg = @as(*const field.type, @ptrCast(@alignCast(default))).*;
-                if (arg.type == .positional) { continue; }
-                try std.fmt.format(writer, "    {s}, {s}    {s}\n", .{arg.short.?, arg.long.?, arg.description.?});
-            }
-        }
 
         const header_text =
             \\agez - age encryption
@@ -147,10 +194,26 @@ pub const Args = struct {
             \\    agez [--encrypt] --passphrase [--armor] [-o OUTPUT] [INPUT]
             \\    agez --decrypt [-i PATH]... [-o OUTPUT] [INPUT]
             ;
+
+        // this is completely unnecessary, but I wanted to try it out
+        // TODO: figure out the spacing for descriptions
+        var options = try std.ArrayList(u8).initCapacity(allocator, fields.len);
+        const writer = options.writer();
+        inline for (fields) |field| {
+            if (field.default_value) |default| {
+                if (field.type != Arg) { continue; }
+                const arg = @as(*const field.type, @ptrCast(@alignCast(default))).*;
+                if (arg.arg) |a| switch (a) {
+                    .positional => continue,
+                    else => try std.fmt.format(writer, "    {s}, {s}    {s}\n", .{arg.short.?, arg.long.?, arg.description.?}),
+                };
+            }
+        }
+
         const options_text = try options.toOwnedSlice();
         defer allocator.free(options_text);
 
-        try std.fmt.format(stdout, 
+        try std.fmt.format(stdout,
             \\{s}
             \\
             \\Options:
@@ -159,11 +222,19 @@ pub const Args = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        _ = self;
+        if (self.recipient.arg) |recipient| {
+            self.allocator.?.free(recipient.multivalue);
+        }
+        if (self.recipients_file.arg) |recipients_file| {
+            self.allocator.?.free(recipients_file.multivalue);
+        }
+        if (self.identity.arg) |identity| {
+            self.allocator.?.free(identity.multivalue);
+        }
     }
 };
 
-test "single argument" {
+test "arguments" {
     const t = std.testing;
     const allocator = std.testing.allocator;
 
@@ -172,14 +243,14 @@ test "single argument" {
         expected: Args,
     }{
         .{ .args = "--encrypt", .expected = .{
-            .encrypt = .{ .flag = true, },
+            .encrypt = .{ .arg = .{ .flag = true, } },
         }},
         .{ .args = "--decrypt", .expected = .{
-            .decrypt = .{ .flag = true, },
+            .decrypt = .{ .arg = .{ .flag = true, } },
         }},
         .{ .args = "--decrypt -i f", .expected = .{
-            .decrypt = .{ .flag = true, },
-            .identity = .{ .value = "f", },
+            .decrypt = .{ .arg = .{ .flag = true, } },
+            .identity = .{ .arg = .{ .value = "f", } },
         }},
     };
 
@@ -191,24 +262,24 @@ test "single argument" {
         defer testing_args.deinit();
 
         try testing_args.parse(&iter);
-        try t.expect(testing_args.encrypt.flag == c.expected.encrypt.flag);
-        try t.expect(testing_args.decrypt.flag == c.expected.decrypt.flag);
-        if (c.expected.output.value) |v|{
-            try t.expect(std.mem.eql(u8, testing_args.output.value.?, v));
+        try t.expect(testing_args.encrypt.flag() == c.expected.encrypt.flag());
+        try t.expect(testing_args.decrypt.flag() == c.expected.decrypt.flag());
+        if (c.expected.output.value()) |v| {
+            try t.expect(std.mem.eql(u8, testing_args.output.value().?, v));
         }
-        try t.expect(testing_args.armor.flag == c.expected.armor.flag);
-        if (c.expected.passphrase.value) |v|{
-            try t.expect(std.mem.eql(u8, testing_args.passphrase.value.?, v));
+        try t.expect(testing_args.armor.flag() == c.expected.armor.flag());
+        if (c.expected.passphrase.value()) |v| {
+            try t.expect(std.mem.eql(u8, testing_args.passphrase.value().?, v));
         }
-        if (c.expected.recipient.value) |v|{
-            try t.expect(std.mem.eql(u8, testing_args.recipient.value.?, v));
+        if (c.expected.recipient.value()) |v| {
+            try t.expect(std.mem.eql(u8, testing_args.recipient.value().?, v));
         }
-        if (c.expected.@"recipients-file".value) |v|{
-            try t.expect(std.mem.eql(u8, testing_args.@"recipients-file".value.?, v));
+        if (c.expected.recipients_file.value()) |v| {
+            try t.expect(std.mem.eql(u8, testing_args.recipients_file.value().?, v));
         }
-        if (c.expected.identity.value) |v|{
-            try t.expect(std.mem.eql(u8, testing_args.identity.value.?, v));
-        }
+        if (c.expected.identity.value()) |e| if (testing_args.identity.value()) |g| {
+            try t.expect(std.mem.eql(u8, e, g));
+        };
     }
 }
 
