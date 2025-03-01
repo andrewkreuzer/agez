@@ -164,7 +164,12 @@ pub const Key = struct {
         hkdf.expand(&encryption_key, "payload", k);
 
         while (true) {
-            const read = try reader.read(&read_buffer);
+            var read: usize = 0;
+            while (read < read_buffer.len) {
+                const n = try reader.read(read_buffer[read..]);
+                if (n == 0) { break; }
+                read += n;
+            }
             if (read == 0) { break; }
             if (read < age_chunk_size) {
                 nonce[nonce.len-1] = 0x01;

@@ -55,6 +55,8 @@ pub const Recipient = struct {
         }
     };
 
+    /// returns the stanza of a recipient. it's the
+    /// callers responsibility to free the memory
     pub fn toString(self: *Self, allocator: Allocator) ![]const u8 {
         return self.type.toString(allocator, self.args.?, self.body.?);
     }
@@ -91,6 +93,7 @@ pub const Recipient = struct {
 const RecipientErrors = error{
     InvalidRecipient,
     InvalidRecipientType,
+    InvalidRecipientArgs
 };
 
 test "unwrap" {
@@ -138,7 +141,7 @@ test "wrap" {
     _ = try bech32.convertBits(&x25519_secret_key, Bech32.data, 5, 8, false);
     const public_key: [32]u8 = try std.crypto.dh.X25519.recoverPublicKey(x25519_secret_key);
 
-    try recipient.wrap(allocator, file_key, public_key);
+    try recipient.wrap(allocator, file_key, &public_key);
 
     try t.expect(recipient.state == .wrapped);
 

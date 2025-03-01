@@ -32,14 +32,11 @@ pub fn toString(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
     return try allocator.dupe(u8, fbs.getWritten());
 }
 
+/// Decrypts the recipients body and returns the file key
 pub fn unwrap(allocator: Allocator, password: []const u8, args: [][]u8, body: []u8) !Key {
+    // stanza body encryption key
     var key: [32]u8 = undefined;
     defer std.crypto.utils.secureZero(u8, &key);
-
-    // derived from the bech32 encoded
-    // identity supplied by the user
-    var x25519_secret_key: [32]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &x25519_secret_key);
 
     // the encrypted file key
     var file_key_enc: [32]u8 = undefined;
@@ -59,13 +56,21 @@ pub fn unwrap(allocator: Allocator, password: []const u8, args: [][]u8, body: []
     // an empty associated data
     const ad = [_]u8{};
 
-    const decoder = std.base64.Base64Decoder.init(base64_alphabet, null);
-    // because we swap the first arg out our salt
-    // ends up being the second arg
-    try decoder.decode(salt[key_label.len..], args[1]);
-    try decoder.decode(&file_key_enc, body);
+    if (args.len != 2) {
+        return error.InvalidRecipientArgs;
+    }
+    const work_factor = std.fmt.parseInt(u6, args[0], 10) catch {
+        return error.InvalidScryptWorkFactor;
+    };
 
-    const work_factor: u6 = @intCast(try std.fmt.parseInt(u6, args[0], 10));
+    const decoder = std.base64.Base64Decoder.init(base64_alphabet, null);
+    decoder.decode(salt[key_label.len..], args[1]) catch {
+        return error.InvalidScryptSalt;
+    };
+    decoder.decode(&file_key_enc, body) catch {
+        return error.InvalidScryptBody;
+    };
+
     try scrypt.kdf(
         allocator,
         &key,
@@ -88,7 +93,7 @@ pub fn unwrap(allocator: Allocator, password: []const u8, args: [][]u8, body: []
 }
 
 /// Encrypts the file key in the recipients body
-/// and populates the recipients type, args, and body
+/// and returns a new recipient with type, args, and body
 /// caller is responsible for deinit on the reciepient
 pub fn wrap(allocator: Allocator, file_key: Key, password: []const u8) !Recipient {
     // scrypt derived key from the password
@@ -151,3 +156,9 @@ pub fn wrap(allocator: Allocator, file_key: Key, password: []const u8) !Recipien
         .body = try allocator.dupe(u8, &body),
     };
 }
+
+const ScryptErrors = error{
+    InvalidScryptWorkFactor,
+    InvalidScryptSalt,
+    InvalidScryptBody,
+};

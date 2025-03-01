@@ -28,7 +28,7 @@ pub fn init(args: cli.Args) !@This() {
         output_file = try fs.cwd().createFile(path, .{ .truncate = true });
     } else {
         output_file = std.io.getStdOut();
-        if (output_file.isTty() and !args.decrypt.flag()) {
+        if (output_file.isTty() and !args.decrypt.flag() and !args.armor.flag()) {
             std.debug.print(
                 \\Output is a tty, it's not recommended to write arbitrary data to the terminal
                 \\use -o, --output to specify a file or redirect stdout

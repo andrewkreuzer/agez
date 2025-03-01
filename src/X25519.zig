@@ -31,6 +31,7 @@ pub fn toString(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
     return try allocator.dupe(u8, &buf);
 }
 
+/// Decrypts the recipients body and returns the file key
 pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []u8) !Key {
     // derived from the shared secret and salt
     // decrypts the file key from the recipients body
@@ -65,11 +66,21 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
     // space to decode the recipients bech32 identity
     var identity_buf: [bech32_max_len]u8 = undefined;
 
-    const decoder = std.base64.Base64Decoder.init(base64_alphabet, null);
-    try decoder.decode(&ephemeral_share, args[0]);
-    try decoder.decode(&file_key_enc, body);
+    if (args.len != 1) {
+        return error.InvalidRecipientArgs;
+    }
 
-    const Bech32 = try bech32.decode(&identity_buf, bech32_hrp, identity);
+    const decoder = std.base64.Base64Decoder.init(base64_alphabet, null);
+    decoder.decode(&ephemeral_share, args[0]) catch {
+        return error.InvalidX25519Argument;
+    };
+    decoder.decode(&file_key_enc, body) catch {
+        return error.InvalidX25519Body;
+    };
+
+    const Bech32 = bech32.decode(&identity_buf, bech32_hrp, identity) catch {
+        return error.InvalidX25519Identity;
+    };
     _ = try bech32.convertBits(&x25519_secret_key, Bech32.data, 5, 8, false);
 
     const public_key = try X25519.recoverPublicKey(x25519_secret_key);
@@ -168,3 +179,9 @@ pub fn wrap(allocator: Allocator, file_key: Key, public_key: []const u8) !Recipi
         .body = try allocator.dupe(u8, &body),
     };
 }
+
+const X25519Errors = error{
+    InvalidX25519Identity,
+    InvalidX25519Argument,
+    InvalidX25519Body,
+};
