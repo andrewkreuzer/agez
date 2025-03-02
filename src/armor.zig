@@ -67,7 +67,7 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
         }
 
         //-rw-r--r-- 1 akreuzer users 2.4G Mar  1 18:51 /tmp/age-test.age
-        //./zig-out/bin/agez -i id -d /tmp/age-test.age > /dev/null  3.33s user 0.38s system 99% cpu 3.727 total
+        //./zig-out/bin/agez -i id -d /tmp/age-test.age > /dev/null  3.36s user 0.39s system 99% cpu 3.756 total
         fn fill2(self: *Self) Error!usize {
             var buf = [_]u8{0} ** armor_columns_per_line;
 
@@ -107,7 +107,7 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
                     while (pos > 0) {
                         pos -= 1;
                         const chr = maybe_marker[pos];
-                        if (pos == 0 or (pos < 32 and chr == '\n')) self.marker_found = true;
+                        if (pos < armor_end_marker.len and chr == '\n') self.marker_found = true;
                         if (armor_end_map[chr] == 0) break;
                     }
                     if (self.marker_found) {
@@ -330,8 +330,6 @@ test "fill" {
                 ,
                 .expect = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         },
-        //39004641
-        //33637987
     };
     for (cases) |case| {
         var fbs = std.io.fixedBufferStream(case.data);
