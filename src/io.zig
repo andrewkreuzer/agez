@@ -12,8 +12,6 @@ output: File,
 buffered_reader: BufferedReader(4096, File.Reader),
 buffered_writer: BufferedWriter(4096, File.Writer),
 
-
-
 pub fn init(args: cli.Args) !@This() {
     var input_file: File = undefined;
     var output_file: File = undefined;

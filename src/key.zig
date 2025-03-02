@@ -157,19 +157,14 @@ pub const Key = struct {
         var read_buffer = [_]u8{0} ** (age_chunk_size + chacha_tag_length);
         var write_buffer = [_]u8{0} ** age_chunk_size;
 
-        const key_nonce_read = try reader.read(&key_nonce);
+        const key_nonce_read = try reader.readAll(&key_nonce);
         if (key_nonce_read != nonce_length) { return error.InvalidKeyNonce; }
 
         const k = hkdf.extract(&key_nonce, self.k);
         hkdf.expand(&encryption_key, "payload", k);
 
         while (true) {
-            var read: usize = 0;
-            while (read < read_buffer.len) {
-                const n = try reader.read(read_buffer[read..]);
-                if (n == 0) { break; }
-                read += n;
-            }
+            const read = try reader.readAll(&read_buffer);
             if (read == 0) { break; }
             if (read < age_chunk_size) {
                 nonce[nonce.len-1] = 0x01;

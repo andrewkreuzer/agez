@@ -136,9 +136,6 @@ pub fn AgeFile(
                             error.EndOfStream => {
                                 return .{ .prefix = .unknown, .bytes = fbs.getWritten(), };
                             },
-                            // error.ArmorInvalidLineLength => {
-                            //     return .{ .prefix = .unknown, .bytes = fbs.getWritten(), };
-                            // },
                             else => unreachable,
                         };
                     } else {
