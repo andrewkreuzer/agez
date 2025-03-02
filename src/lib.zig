@@ -2,16 +2,16 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const File = std.fs.File;
 
+const armor = @import("armor.zig");
 pub const bech32 = @import("bech32.zig");
 pub const cli = @import("cli.zig");
 const format = @import("format.zig");
-
-pub const Io = @import("io.zig");
-const armor = @import("armor.zig");
+const AgeHeaderReader = format.AgeHeaderReader;
+const AgeHeaderWriter = format.AgeHeaderWriter;
+const Args = cli.Args;
 const ArmoredReader = armor.ArmoredReader;
 const ArmoredWriter = armor.ArmoredWriter;
-const Args = cli.Args;
-const AgeFile = format.AgeFile;
+pub const Io = @import("io.zig");
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
 
@@ -22,8 +22,6 @@ pub fn encrypt(
 ) !void {
     const reader = io.reader();
     const writer = io.writer();
-    var armored_reader = ArmoredReader(@TypeOf(reader)){ .r = reader };
-    const areader = armored_reader.reader();
     var armored_writer = ArmoredWriter(@TypeOf(writer)){ .w = writer };
     const awriter = armored_writer.writer();
 
@@ -73,33 +71,24 @@ pub fn encrypt(
         try recipients.append(r);
     };
 
-    var age = AgeFile(
-        @TypeOf(reader),
-        @TypeOf(writer),
-        @TypeOf(areader),
-        @TypeOf(awriter),
-    ){
-        .allocator = allocator,
-        .r = reader,
-        .w = writer,
-        .ar = areader,
-        .aw = awriter,
-        .is_armored = is_armor,
-        .version = .v1,
-        .recipients = try recipients.toOwnedSlice(),
-    };
-    defer age.deinit();
-
     if (is_armor) {
         _ = try writer.write(armor.armor_begin_marker);
         _ = try writer.write("\n");
-        try age.write(&file_key);
+        var header_writer = AgeHeaderWriter(
+            @TypeOf(writer),
+            @TypeOf(awriter)
+        ){ .allocator = allocator, .w = writer, .aw = awriter, .armored = true };
+        try header_writer.write(&file_key, "age-encryption.org/v1", try recipients.toOwnedSlice());
         _ = try file_key.ageEncrypt(reader, awriter);
         try armored_writer.flush();
         _ = try writer.write(armor.armor_end_marker);
         _ = try writer.write("\n");
     } else {
-        try age.write(&file_key);
+        var header_writer = AgeHeaderWriter(
+            @TypeOf(writer),
+            @TypeOf(awriter)
+        ){ .allocator = allocator, .w = writer, .aw = awriter };
+        try header_writer.write(&file_key, "age-encryption.org/v1", try recipients.toOwnedSlice());
         _ = try file_key.ageEncrypt(reader, writer);
     }
 }
@@ -111,35 +100,21 @@ pub fn decrypt(
 ) !void {
     const reader = io.reader();
     const writer = io.writer();
-    var armored_reader = ArmoredReader(@TypeOf(reader)){ .r = reader };
-    const areader = armored_reader.reader();
-    var armored_writer = ArmoredWriter(@TypeOf(writer)){ .w = writer };
-    const awriter = armored_writer.writer();
 
-    var is_armor = false;
-    if (args.armor.flag()) {
-        is_armor = true;
-    }
-
-    var age = AgeFile(
+    var age_reader = AgeHeaderReader(
         @TypeOf(reader),
-        @TypeOf(writer),
-        @TypeOf(areader),
-        @TypeOf(awriter),
     ){
         .allocator = allocator,
-        .r = reader,
-        .w = writer,
-        .ar = areader,
-        .aw = awriter,
-        .is_armored = is_armor,
+        .r = .{ .normal = reader },
+        .is_armored = args.armor.flag(),
     };
+    defer age_reader.deinit();
+
+    var age = try age_reader.read();
     defer age.deinit();
 
-    try age.read();
-
     var file_key: Key = undefined;
-    if (age.recipients.?[0].type == .scrypt) {
+    if (age.recipients.items[0].type == .scrypt) {
         var password_buf = [_]u8{0} ** 128;
         const passphrase = try Io.read_password(&password_buf);
         defer std.crypto.utils.secureZero(u8, passphrase);
@@ -156,12 +131,12 @@ pub fn decrypt(
 
     defer file_key.deinit(allocator);
 
-    if (!age.verify_hmac(&file_key)) {
+    if (!age.verify_hmac(allocator, &file_key)) {
         std.debug.print("hmac mismatch\n", .{});
     }
 
-    if (age.is_armored) {
-        _ = try file_key.ageDecrypt(areader, writer);
+    if (age_reader.is_armored) {
+        _ = try file_key.ageDecrypt(age_reader.r, writer);
     } else {
         _ = try file_key.ageDecrypt(reader, writer);
     }
