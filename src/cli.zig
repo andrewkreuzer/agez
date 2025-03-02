@@ -183,7 +183,7 @@ pub const Args = struct {
     }
 
     pub fn printHelp(_: *Self, allocator: Allocator) !void {
-        const fields = @typeInfo(Self).Struct.fields;
+        const fields = @typeInfo(Self).@"struct".fields;
         const stdout = std.io.getStdOut().writer();
 
         const header_text =
@@ -200,9 +200,8 @@ pub const Args = struct {
         var options = try std.ArrayList(u8).initCapacity(allocator, fields.len);
         const writer = options.writer();
         inline for (fields) |field| {
-            if (field.default_value) |default| {
+            if (field.defaultValue()) |arg| {
                 if (field.type != Arg) { continue; }
-                const arg = @as(*const field.type, @ptrCast(@alignCast(default))).*;
                 if (arg.arg) |a| switch (a) {
                     .positional => continue,
                     else => try std.fmt.format(writer, "    {s}, {s}    {s}\n", .{arg.short.?, arg.long.?, arg.description.?}),

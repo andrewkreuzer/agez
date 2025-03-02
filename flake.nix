@@ -31,7 +31,7 @@
       {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            zig.packages.${system}."0.13.0"
+            zig.packages.${system}.master
             age
             rage
             lldb
