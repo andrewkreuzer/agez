@@ -1,6 +1,5 @@
 const std = @import("std");
 const hkdf = std.crypto.kdf.hkdf.HkdfSha256;
-const ChaCha20IETF = std.crypto.stream.chacha.ChaCha20IETF;
 const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 const X25519 = std.crypto.dh.X25519;
 const Allocator = std.mem.Allocator;
@@ -12,9 +11,6 @@ const Recipient = @import("recipient.zig").Recipient;
 pub const bech32_hrp = "AGE-SECRET-KEY-";
 pub const bech32_max_len = 90;
 const key_label = "age-encryption.org/v1/X25519";
-const base64_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".*;
-
-const Self = @This();
 
 pub fn toString(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
     var buf = [_]u8{0} ** 97;
@@ -70,11 +66,11 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
         return error.InvalidRecipientArgs;
     }
 
-    const decoder = std.base64.Base64Decoder.init(base64_alphabet, null);
-    decoder.decode(&ephemeral_share, args[0]) catch {
+    const Decoder = std.base64.standard_no_pad.Decoder;
+    Decoder.decode(&ephemeral_share, args[0]) catch {
         return error.InvalidX25519Argument;
     };
-    decoder.decode(&file_key_enc, body) catch {
+    Decoder.decode(&file_key_enc, body) catch {
         return error.InvalidX25519Body;
     };
 
@@ -166,9 +162,9 @@ pub fn wrap(allocator: Allocator, file_key: Key, public_key: []const u8) !Recipi
 
     @memcpy(file_key_enc[16..], &tag);
 
-    const encoder = std.base64.Base64Encoder.init(base64_alphabet, null);
-    _ = encoder.encode(&body, &file_key_enc);
-    _ = encoder.encode(&ephemeral_share_b64, &ephemeral_share);
+    const Encoder = std.base64.standard_no_pad.Encoder;
+    _ = Encoder.encode(&body, &file_key_enc);
+    _ = Encoder.encode(&ephemeral_share_b64, &ephemeral_share);
 
     var args = try allocator.alloc([]u8, 1);
     args[0] = try allocator.dupe(u8, &ephemeral_share_b64);

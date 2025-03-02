@@ -1,21 +1,14 @@
 const std = @import("std");
-const hkdf = std.crypto.kdf.hkdf.HkdfSha256;
-const ChaCha20IETF = std.crypto.stream.chacha.ChaCha20IETF;
 const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
-const X25519 = std.crypto.dh.X25519;
 const scrypt = std.crypto.pwhash.scrypt;
 const Allocator = std.mem.Allocator;
 
-const bech32 = @import("bech32.zig");
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
 
 const key_label = "age-encryption.org/v1/scrypt";
-const base64_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".*;
 const rounds = 8;
 const parallization = 1;
-
-const Self = @This();
 
 pub fn toString(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
     var buf = [_]u8{0} ** 128;
@@ -33,7 +26,7 @@ pub fn toString(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
 }
 
 /// Decrypts the recipients body and returns the file key
-pub fn unwrap(allocator: Allocator, password: []const u8, args: [][]u8, body: []u8) !Key {
+pub fn unwrap(allocator: Allocator, passphrase: []const u8, args: [][]u8, body: []u8) !Key {
     // stanza body encryption key
     var key: [32]u8 = undefined;
     defer std.crypto.utils.secureZero(u8, &key);
@@ -63,18 +56,18 @@ pub fn unwrap(allocator: Allocator, password: []const u8, args: [][]u8, body: []
         return error.InvalidScryptWorkFactor;
     };
 
-    const decoder = std.base64.Base64Decoder.init(base64_alphabet, null);
-    decoder.decode(salt[key_label.len..], args[1]) catch {
+    const Decoder = std.base64.standard_no_pad.Decoder;
+    Decoder.decode(salt[key_label.len..], args[1]) catch {
         return error.InvalidScryptSalt;
     };
-    decoder.decode(&file_key_enc, body) catch {
+    Decoder.decode(&file_key_enc, body) catch {
         return error.InvalidScryptBody;
     };
 
     try scrypt.kdf(
         allocator,
         &key,
-        password,
+        passphrase,
         &salt,
         .{.r=rounds, .p=parallization, .ln=work_factor}
     );
@@ -95,8 +88,8 @@ pub fn unwrap(allocator: Allocator, password: []const u8, args: [][]u8, body: []
 /// Encrypts the file key in the recipients body
 /// and returns a new recipient with type, args, and body
 /// caller is responsible for deinit on the reciepient
-pub fn wrap(allocator: Allocator, file_key: Key, password: []const u8) !Recipient {
-    // scrypt derived key from the password
+pub fn wrap(allocator: Allocator, file_key: Key, passphrase: []const u8) !Recipient {
+    // scrypt derived key from the passphrase
     var key: [32]u8 = undefined;
     defer std.crypto.utils.secureZero(u8, &key);
 
@@ -133,7 +126,7 @@ pub fn wrap(allocator: Allocator, file_key: Key, password: []const u8) !Recipien
     try scrypt.kdf(
         allocator,
         &key,
-        password,
+        passphrase,
         &salt,
         .{.r=rounds, .p=parallization, .ln=work_factor}
     );
@@ -142,9 +135,9 @@ pub fn wrap(allocator: Allocator, file_key: Key, password: []const u8) !Recipien
 
     @memcpy(file_key_enc[16..], &tag);
 
-    const encoder = std.base64.Base64Encoder.init(base64_alphabet, null);
-    _ = encoder.encode(&body, &file_key_enc);
-    const salt_b64 = encoder.encode(&salt_b64_buf, salt[key_label.len..]);
+    const Encoder = std.base64.standard_no_pad.Encoder;
+    _ = Encoder.encode(&body, &file_key_enc);
+    const salt_b64 = Encoder.encode(&salt_b64_buf, salt[key_label.len..]);
 
     var args = try allocator.alloc([]u8, 2);
     args[0] = try allocator.dupe(u8, salt_b64);

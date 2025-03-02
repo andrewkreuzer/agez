@@ -6,11 +6,10 @@ const armor = @import("armor.zig");
 pub const bech32 = @import("bech32.zig");
 pub const cli = @import("cli.zig");
 const format = @import("format.zig");
-const AgeHeaderReader = format.AgeHeaderReader;
-const AgeHeaderWriter = format.AgeHeaderWriter;
+const Age = format.Age;
+const AgeReader = format.AgeReader;
+const AgeWriter = format.AgeWriter;
 const Args = cli.Args;
-const ArmoredReader = armor.ArmoredReader;
-const ArmoredWriter = armor.ArmoredWriter;
 pub const Io = @import("io.zig");
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
@@ -22,21 +21,15 @@ pub fn encrypt(
 ) !void {
     const reader = io.reader();
     const writer = io.writer();
-    var armored_writer = ArmoredWriter(@TypeOf(writer)){ .w = writer };
-    const awriter = armored_writer.writer();
 
-    var is_armor = false;
-    if (args.armor.flag()) {
-        is_armor = true;
-    }
-
+    const armored = args.armor.flag();
     const file_key = try Key.initRandom(allocator, 16);
 
     var recipients = std.ArrayList(Recipient).init(allocator);
     if (args.passphrase.flag()) {
         var r = Recipient{ .type = .scrypt };
-        var password_buf: [1024]u8 = undefined;
-        const passphrase = try Io.read_password(&password_buf);
+        var passphrase_buf: [1024]u8 = undefined;
+        const passphrase = try Io.read_passphrase(&passphrase_buf);
         defer std.crypto.utils.secureZero(u8, passphrase);
         try r.wrap(allocator, file_key, passphrase);
         try recipients.append(r);
@@ -71,26 +64,14 @@ pub fn encrypt(
         try recipients.append(r);
     };
 
-    if (is_armor) {
-        _ = try writer.write(armor.armor_begin_marker);
-        _ = try writer.write("\n");
-        var header_writer = AgeHeaderWriter(
-            @TypeOf(writer),
-            @TypeOf(awriter)
-        ){ .allocator = allocator, .w = writer, .aw = awriter, .armored = true };
-        try header_writer.write(&file_key, "age-encryption.org/v1", try recipients.toOwnedSlice());
-        _ = try file_key.ageEncrypt(reader, awriter);
-        try armored_writer.flush();
-        _ = try writer.write(armor.armor_end_marker);
-        _ = try writer.write("\n");
-    } else {
-        var header_writer = AgeHeaderWriter(
-            @TypeOf(writer),
-            @TypeOf(awriter)
-        ){ .allocator = allocator, .w = writer, .aw = awriter };
-        try header_writer.write(&file_key, "age-encryption.org/v1", try recipients.toOwnedSlice());
-        _ = try file_key.ageEncrypt(reader, writer);
-    }
+    const age: Age = .{
+        .version = .v1,
+        .recipients = recipients,
+    };
+    var header_writer = AgeWriter(@TypeOf(writer)).init(allocator, writer, armored);
+    try header_writer.write(&file_key, age);
+    _ = try file_key.ageEncrypt(reader, header_writer.w);
+    header_writer.deinit();
 }
 
 pub fn decrypt(
@@ -101,24 +82,18 @@ pub fn decrypt(
     const reader = io.reader();
     const writer = io.writer();
 
-    var age_reader = AgeHeaderReader(
-        @TypeOf(reader),
-    ){
-        .allocator = allocator,
-        .r = .{ .normal = reader },
-        .is_armored = args.armor.flag(),
-    };
+    var age_reader = AgeReader(@TypeOf(reader)).init(allocator, reader);
     defer age_reader.deinit();
 
     var age = try age_reader.read();
-    defer age.deinit();
+    defer age.deinit(allocator);
 
     var file_key: Key = undefined;
     if (age.recipients.items[0].type == .scrypt) {
-        var password_buf = [_]u8{0} ** 128;
-        const passphrase = try Io.read_password(&password_buf);
+        var passphrase_buf = [_]u8{0} ** 128;
+        const passphrase = try Io.read_passphrase(&passphrase_buf);
         defer std.crypto.utils.secureZero(u8, passphrase);
-        file_key = try age.file_key(passphrase);
+        file_key = try age.file_key(allocator, passphrase);
     } else {
         var identity_buf = [_]u8{0} ** 90;
         defer std.crypto.utils.secureZero(u8, &identity_buf);
@@ -126,7 +101,7 @@ pub fn decrypt(
         if (args.identity.values()) |ids| {
             identity = try Io.identity(&identity_buf, ids);
         }
-        file_key = try age.file_key(identity);
+        file_key = try age.file_key(allocator, identity);
     }
 
     defer file_key.deinit(allocator);
@@ -135,11 +110,7 @@ pub fn decrypt(
         std.debug.print("hmac mismatch\n", .{});
     }
 
-    if (age_reader.is_armored) {
-        _ = try file_key.ageDecrypt(age_reader.r, writer);
-    } else {
-        _ = try file_key.ageDecrypt(reader, writer);
-    }
+    _ = try file_key.ageDecrypt(age_reader.r, writer);
 }
 
 test {

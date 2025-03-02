@@ -9,6 +9,7 @@ const ArrayList = std.ArrayList;
 
 const armor = @import("armor.zig");
 const ArmoredReader = armor.ArmoredReader;
+const ArmoredWriter = armor.ArmoredWriter;
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
 const RecipientType = Recipient.Type;
@@ -27,30 +28,24 @@ pub const Age = struct {
     mac: ?[]u8 = null,
     header: ?[]u8 = null,
 
-    allocator: Allocator,
-
     const Self = @This();
 
     pub fn init(allocator: Allocator) Self {
         return .{
-            .allocator = allocator,
             .recipients = ArrayList(Recipient).init(allocator),
         };
     }
 
     pub fn verify_hmac(self: *Self, allocator: Allocator, fk: *Key) bool {
-        const encoded = generate_hmac(
-            allocator,
-            self.header.?,
-            fk
-        ) catch return false;
+        const encoded = generate_hmac(allocator, self.header.?, fk)
+            catch return false;
         defer allocator.free(encoded);
         return std.mem.eql(u8, self.mac.?, encoded);
     }
 
-    pub fn file_key(self: *Self, identity: []const u8) !Key {
+    pub fn file_key(self: *Self, allocator: Allocator, identity: []const u8) !Key {
         for (self.recipients.items) |*r| {
-            return r.unwrap(self.allocator, identity) catch |err| switch (err) {
+            return r.unwrap(allocator, identity) catch |err| switch (err) {
                 error.AuthenticationFailed => { continue; },
                 else => return err,
             };
@@ -58,16 +53,16 @@ pub const Age = struct {
         return error.AuthenticationFailed;
     }
 
-    pub fn deinit(self: *Self) void {
+    pub fn deinit(self: *Self, allocator: Allocator) void {
         for (self.recipients.items) |*r| {
-            r.deinit(self.allocator);
+            r.deinit(allocator);
         }
         self.recipients.deinit();
         if (self.mac) |mac| {
-            self.allocator.free(mac);
+            allocator.free(mac);
         }
         if (self.header) |header| {
-            self.allocator.free(header);
+            allocator.free(header);
         }
         self.mac = null;
         self.header = null;
@@ -101,15 +96,14 @@ const V = enum {
     }
 };
 
-pub fn AgeHeaderReader(
+pub fn AgeReader(
     comptime ReaderType: type,
 ) type {
     return struct {
         const Self = @This();
 
         r: Reader,
-        is_armored: bool = false,
-        armored_reader: *ArmoredReaderType = undefined,
+        armored_reader: ArmoredReaderType = undefined,
 
         allocator: Allocator,
 
@@ -266,6 +260,13 @@ pub fn AgeHeaderReader(
             };
         }
 
+        pub fn init(allocator: Allocator, reader: ReaderType) Self {
+            return .{
+                .allocator = allocator,
+                .r = .{ .normal = reader },
+            };
+        }
+
         pub fn read(self: *Self) !Age {
             const Iter = Iterator();
             var iter: Iter = .{ .r = self.r };
@@ -275,9 +276,7 @@ pub fn AgeHeaderReader(
             while (iter.next(done)) |line| {
                 switch (line.prefix) {
                     .armor_begin => {
-                        self.is_armored = true;
-                        self.armored_reader = try self.allocator.create(ArmoredReaderType);
-                        self.armored_reader.* = ArmoredReaderType{ .r = self.r.normal };
+                        self.armored_reader = ArmoredReaderType{ .r = self.r.normal };
                         const areader = self.armored_reader.reader();
                         self.r = .{ .armored = areader };
                         iter.r = self.r;
@@ -289,15 +288,12 @@ pub fn AgeHeaderReader(
                             var a = std.ArrayList([]u8).init(self.allocator);
                             const stanza = line.bytes[3..];
 
-                            for (stanza) |c| {
-                                if (!Self.isValidAscii(c)) {
-                                    return error.InvalidAscii;
-                                }
-                            }
-
                             var i: usize = 0;
                             var j: usize = 0;
                             while (j < stanza.len) {
+                                if (!Self.isValidAscii(stanza[j])) {
+                                    return error.InvalidAscii;
+                                }
                                 if (stanza[j] == ' ') {
                                     const value = try self.allocator.dupe(u8, stanza[i .. j]);
                                     try a.append(value);
@@ -366,27 +362,57 @@ pub fn AgeHeaderReader(
         }
 
         pub fn deinit(self: *Self) void {
-            if (self.r == .armored) {
-                self.allocator.destroy(self.armored_reader);
-            }
+            _ = self;
         }
     };
 }
 
-pub fn AgeHeaderWriter(comptime WriterType: type, comptime ArmoredWriterType: type) type {
+pub fn AgeWriter(comptime WriterType: type) type {
     return struct {
         const Self = @This();
-        w: WriterType,
-        aw: ArmoredWriterType,
+        w: Writer,
+        normal_writer: WriterType = undefined,
+        armored_writer: ArmoredWriterType = undefined,
         armored: bool = false,
 
         allocator: Allocator,
 
-        pub fn write(self: *Self, fk: *const Key, version: []const u8, recipients: []Recipient) !void {
+        const ArmoredWriterType = ArmoredWriter(WriterType);
+        const Writer = union(enum) {
+            armored: ArmoredWriterType.Writer,
+            normal: WriterType,
+
+            pub fn write(self: Writer, buf: []const u8) !usize {
+                return switch (self) {
+                    .armored => |armored| armored.write(buf),
+                    .normal => |normal| normal.write(buf),
+                };
+            }
+
+            pub fn writeAll(self: Writer, buf: []const u8) !usize {
+                return switch (self) {
+                    .armored => |armored| armored.writeAll(buf),
+                    .normal => |normal| normal.writeAll(buf),
+                };
+            }
+        };
+
+        pub fn init(allocator: Allocator, writer: WriterType, armored: bool) Self {
+            var header_writer: Self = .{
+                .allocator = allocator,
+                .w = .{ .normal = writer },
+                .normal_writer = writer,
+                .armored = armored,
+            };
+            header_writer.writeArmorStartIfNeeded() catch unreachable;
+            return header_writer;
+        }
+
+        pub fn write(self: *Self, fk: *const Key, age: Age) !void {
             var recip = std.ArrayList(u8).init(self.allocator);
             defer recip.deinit();
             var rwriter = recip.writer();
-            for (recipients) |*r| {
+            for (age.recipients.items) |*r| {
                 const rstring = try r.toString(self.allocator);
                 _ = try rwriter.write(rstring);
                 self.allocator.free(rstring);
@@ -397,7 +423,8 @@ pub fn AgeHeaderWriter(comptime WriterType: type, comptime ArmoredWriterType: ty
                 \\{s}
                 \\{s}
                 \\---
-            ,.{version,recip.items});
+            ,.{age.version.?.toString(),recip.items});
+            defer self.allocator.free(header);
 
             const mac = try generate_hmac(
                 self.allocator,
@@ -405,18 +432,43 @@ pub fn AgeHeaderWriter(comptime WriterType: type, comptime ArmoredWriterType: ty
                 fk,
             );
 
-            if (self.armored) {
-                _ = try self.aw.write(header);
-                _ = try self.aw.write(" ");
-                _ = try self.aw.write(mac);
-                _ = try self.aw.write("\n");
-            } else {
-                _ = try self.w.write(header);
-                _ = try self.w.write(" ");
-                _ = try self.w.write(mac);
-                _ = try self.w.write("\n");
+            try self.switchWriterIfNeeded();
+            _ = try self.w.write(header);
+            _ = try self.w.write(" ");
+            _ = try self.w.write(mac);
+            _ = try self.w.write("\n");
+        }
+
+        fn switchWriterIfNeeded(self: *Self) !void {
+            if (!self.armored) return;
+            switch (self.w) {
+                .normal => {
+                    self.armored_writer = ArmoredWriterType{ .w = self.normal_writer };
+                    const awriter = self.armored_writer.writer();
+                    self.w = .{ .armored = awriter };
+                },
+                .armored => {
+                    self.w = .{ .normal = self.normal_writer };
+                },
             }
-            self.allocator.free(header);
+        }
+
+        fn writeArmorStartIfNeeded(self: *Self) !void {
+            if (!self.armored) return;
+            _ = try self.w.write(armor.armor_begin_marker);
+            _ = try self.w.write("\n");
+        }
+
+        pub fn writeArmorEndIfNeeded(self: *Self) !void {
+            if (!self.armored) return;
+            try self.armored_writer.flush();
+            _ = try self.w.write(armor.armor_end_marker);
+            _ = try self.w.write("\n");
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.switchWriterIfNeeded() catch unreachable;
+            self.writeArmorEndIfNeeded() catch unreachable;
         }
     };
 }
@@ -461,7 +513,7 @@ test "age file" {
     const test_file_key = "YELLOW SUBMARINE";
 
     const allocator = std.testing.allocator;
-    var age_reader = AgeHeaderReader(
+    var age_reader = AgeReader(
         @TypeOf(fbs.reader()),
     ){
         .allocator = allocator,
@@ -518,7 +570,7 @@ test "armored age file" {
     const test_file_key = "YELLOW SUBMARINE";
 
     const allocator = std.testing.allocator;
-    var age_reader = AgeHeaderReader(
+    var age_reader = AgeReader(
         @TypeOf(fbs.reader()),
     ){
         .allocator = allocator,
@@ -567,7 +619,7 @@ test "iterator" {
         \\--- Vn+54jqiiUCE+WZcEVY3f1sqHjlu/z1LCQ/T7Xm7qI0
     );
 
-    var iter = AgeHeaderReader(
+    var iter = AgeReader(
         @TypeOf(fbs.reader()),
     ).Iterator(){
         .r = .{ .normal = fbs.reader() },
@@ -585,7 +637,7 @@ test "invalid" {
     var fbs = io.fixedBufferStream("age-encryption.org/v1\n-> \x7f\n");
 
     const allocator = std.testing.allocator;
-    var age_reader = AgeHeaderReader(
+    var age_reader = AgeReader(
         @TypeOf(fbs.reader()),
     ){
         .allocator = allocator,

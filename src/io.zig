@@ -74,7 +74,7 @@ pub fn identity(buf: []u8, identity_files: []const []const u8) ![]u8 {
     return error.MissingIdentity;
 }
 
-pub fn read_password(buf: []u8) ![]u8 {
+pub fn read_passphrase(buf: []u8) ![]u8 {
     var fbs = std.io.fixedBufferStream(buf);
     const pwriter = fbs.writer();
 
@@ -96,7 +96,7 @@ pub fn read_password(buf: []u8) ![]u8 {
 
     try std.posix.tcsetattr(tty.handle, std.os.linux.TCSA.NOW, term_orig);
 
-    //TODO: confirm password
+    //TODO: confirm passphrase
     return fbs.getWritten();
 }
 
