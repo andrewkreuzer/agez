@@ -136,7 +136,7 @@ test "wrap" {
 
     const identity = "AGE-SECRET-KEY-1XMWWC06LY3EE5RYTXM9MFLAZ2U56JJJ36S0MYPDRWSVLUL66MV4QX3S7F6";
     var identity_buf: [X25519.bech32_max_len]u8 = undefined;
-    const Bech32 = try bech32.decode(&identity_buf, X25519.bech32_hrp, identity);
+    const Bech32 = try bech32.decode(&identity_buf, X25519.bech32_hrp_private, identity);
     var x25519_secret_key: [32]u8 = undefined;
     _ = try bech32.convertBits(&x25519_secret_key, Bech32.data, 5, 8, false);
     const public_key: [32]u8 = try std.crypto.dh.X25519.recoverPublicKey(x25519_secret_key);

@@ -8,7 +8,8 @@ const bech32 = @import("bech32.zig");
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
 
-pub const bech32_hrp = "AGE-SECRET-KEY-";
+pub const bech32_hrp_private = "AGE-SECRET-KEY-";
+pub const bech32_hrp_public = "age";
 pub const bech32_max_len = 90;
 const key_label = "age-encryption.org/v1/X25519";
 
@@ -74,7 +75,7 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
         return error.InvalidX25519Body;
     };
 
-    const Bech32 = bech32.decode(&identity_buf, bech32_hrp, identity) catch {
+    const Bech32 = bech32.decode(&identity_buf, bech32_hrp_private, identity) catch {
         return error.InvalidX25519Identity;
     };
     _ = try bech32.convertBits(&x25519_secret_key, Bech32.data, 5, 8, false);

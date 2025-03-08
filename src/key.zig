@@ -32,7 +32,7 @@ pub const Key = struct {
 
     /// Deallocates a Key ensuring the key
     /// is zeroed before freeing the memory
-    pub fn deinit(self: *Self, allocator: Allocator) void {
+    pub fn deinit(self: *const Self, allocator: Allocator) void {
         std.crypto.utils.secureZero(u8, self.k);
         allocator.free(self.k);
     }
@@ -40,6 +40,12 @@ pub const Key = struct {
     /// return a reference to the key
     pub fn key(self: *const Self) []const u8 {
         return self.k;
+    }
+
+    /// return the public key
+    pub fn public(self: *const Self) ![32]u8 {
+        const k: [32]u8 = self.k[0..chacha_key_length].*;
+        return try std.crypto.dh.X25519.recoverPublicKey(k);
     }
 
     /// Encrypts the message using ChaCha20Poly1305
@@ -118,7 +124,7 @@ pub const Key = struct {
     /// Decrypts the payload using ChaCha20Poly1305
     /// and returns the plaintext in message
     pub fn ageDecrypt(
-        self: *Self,
+        self: *const Self,
         reader: anytype,
         writer: anytype,
     ) anyerror!void {

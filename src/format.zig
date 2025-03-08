@@ -17,6 +17,8 @@ const RecipientType = Recipient.Type;
 const FormatError = error{
     Unexpected,
     InvalidAscii,
+    NoIdentityMatch,
+    NoIdentities,
     // InvalidHeader,
     // InvalidVersion,
     // UnsupportedVersion,
@@ -36,14 +38,14 @@ pub const Age = struct {
         };
     }
 
-    pub fn verify_hmac(self: *Self, allocator: Allocator, fk: *Key) bool {
+    pub fn verify_hmac(self: *Self, allocator: Allocator, fk: *const Key) bool {
         const encoded = generate_hmac(allocator, self.header.?, fk)
             catch return false;
         defer allocator.free(encoded);
         return std.mem.eql(u8, self.mac.?, encoded);
     }
 
-    pub fn file_key(self: *Self, allocator: Allocator, identity: []const u8) !Key {
+    pub fn open(self: *Self, allocator: Allocator, identity: []const u8) !Key {
         for (self.recipients.items) |*r| {
             return r.unwrap(allocator, identity) catch |err| switch (err) {
                 error.AuthenticationFailed => { continue; },
@@ -522,7 +524,7 @@ test "age file" {
     defer age_reader.deinit();
 
     var age = try age_reader.read();
-    defer age.deinit();
+    defer age.deinit(allocator);
 
     try t.expect(age.version.? == .v1);
     try t.expect(age.recipients.items.len == 3);
@@ -579,7 +581,7 @@ test "armored age file" {
     defer age_reader.deinit();
 
     var age = try age_reader.read();
-    defer age.deinit();
+    defer age.deinit(allocator);
 
     try t.expect(age.version.? == .v1);
     try t.expect(age.recipients.items.len == 1);

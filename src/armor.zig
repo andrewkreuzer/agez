@@ -1,4 +1,5 @@
 const std = @import("std");
+const mem = std.mem;
 const assert = std.debug.assert;
 const io = std.io;
 const window = std.mem.window;
@@ -69,36 +70,29 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
         //-rw-r--r-- 1 akreuzer users 2.4G Mar  1 18:51 /tmp/age-test.age
         //./zig-out/bin/agez -i id -d /tmp/age-test.age > /dev/null  3.36s user 0.39s system 99% cpu 3.756 total
         fn fill2(self: *Self) Error!usize {
-            var buf = [_]u8{0} ** armor_columns_per_line;
-
             if (self.marker_found) return 0;
+
+            var buf = [_]u8{0} ** armor_columns_per_line;
             var n = try self.r.readAll(&buf);
             var slice = buf[0..n];
             if (n == 0) return 0;
 
-
+            // We really only do this to consume the '\n'
             var c = self.r.readByte() catch |err| switch (err) {
                 error.EndOfStream => 0,
                 else => unreachable, //TODO: probably reachable
             };
-            if (c == 0 and n >= armor_end_marker.len) {
-                const start = n - armor_end_marker.len;
-                const marker = if (slice[n-1] == '\n')
-                    slice[start-1..n-1] else slice[start..n];
-                if (std.mem.eql(u8, marker, armor_end_marker)) {
-                    slice = buf[0..start-1];
-                } else unreachable;
-            }
 
-            else if (n != armor_columns_per_line) {
+            if (n != armor_columns_per_line) {
                 const start = n - armor_end_marker.len;
-                const marker = if (slice[n-1] == '\n')
-                    slice[start-1..n-1] else slice[start..n];
-                if (std.mem.eql(u8, marker, armor_end_marker)) {
+                const marker = slice[start..n];
+                if (mem.eql(u8, marker, armor_end_marker)) {
                     slice = buf[0..start-1];
                 } else unreachable;
 
             } else {
+                // TODO: confirm end marker is correct
+                // currently we just assume it is
                 c = slice[n-1];
                 var pos = armor_end_map[c];
                 if (pos != 0) {
@@ -107,11 +101,11 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
                     while (pos > 0) {
                         pos -= 1;
                         const chr = maybe_marker[pos];
-                        if (pos < armor_end_marker.len and chr == '\n') self.marker_found = true;
+                        if (pos < armor_end_marker.len and chr == '\n') {
+                            self.marker_found = true;
+                            slice = buf[0..start+pos];
+                        }
                         if (armor_end_map[chr] == 0) break;
-                    }
-                    if (self.marker_found) {
-                        slice = buf[0..start+pos];
                     }
                 }
             }
@@ -280,8 +274,7 @@ test "fill" {
                 \\c3VudCBpbiBjdWxwYSBxdWkgb2ZmaWNpYSBkZXNlcnVudCBtb2xsaXQKYW5pbSBp
                 \\ZCBlc3QgbGFib3J1bS4i
                 \\-----END AGE ENCRYPTED FILE-----
-                ,
-            .expect =
+            , .expect =
                 \\"Lorem ipsum dolor sit amet, consectetur adipiscing elit,
                 \\sed do eiusmod tempor incididunt ut labore et dolore magna
                 \\aliqua. Ut enim ad minim veniam, quis nostrud exercitation
@@ -290,45 +283,25 @@ test "fill" {
                 \\cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat
                 \\cupidatat non proident, sunt in culpa qui officia deserunt mollit
                 \\anim id est laborum."
-            },
-            .{
-                .data = 
-                \\IkxvcmVtIGlwc3VtIGRvbG9yIHNpdCBhbWV0LCBjb25zZWN0ZXR1ciBhZGlwaXNj
-                \\aW5nIGVsaXQsCnNlZCBkbyBlaXVzbW9kIHRlbXBvciBpbmNpZGlkdW50IHV0IGxh
-                \\Ym9yZSBldCBkb2xvcmUgbWFnbmEKYWxpcXVhLiBVdCBlbmltIGFkIG1pbmltIHZl
-                \\bmlhbSwgcXVpcyBub3N0cnVkIGV4ZXJjaXRhdGlvbgp1bGxhbWNvIGxhYm9yaXMg
-                \\bmlzaSB1dCBhbGlxdWlwIGV4IGVhIGNvbW1vZG8gY29uc2VxdWF0LgpEdWlzIGF1
-                \\dGUgaXJ1cmUgZG9sb3IgaW4gcmVwcmVoZW5kZXJpdCBpbiB2b2x1cHRhdGUgdmVs
-                \\aXQgZXNzZQpjaWxsdW0gZG9sb3JlIGV1IGZ1Z2lhdCBudWxsYSBwYXJpYXR1ci4g
-                \\RXhjZXB0ZXVyIHNpbnQgb2NjYWVjYXQKY3VwaWRhdGF0IG5vbiBwcm9pZGVudCwg
-                \\c3VudCBpbiBjdWxwYSBxdWkgb2ZmaWNpYSBkZXNlcnVudCBtb2xsaXQKYW5pbSBp
-                \\ZCBlc3QgbGFib3J1bS4i
+        },
+        .{
+            .data =
+                \\YWdlLWVuY3J5cHRpb24ub3JnL3Yx
                 \\-----END AGE ENCRYPTED FILE-----
-                ,
-                .expect =
-                \\"Lorem ipsum dolor sit amet, consectetur adipiscing elit,
-                \\sed do eiusmod tempor incididunt ut labore et dolore magna
-                \\aliqua. Ut enim ad minim veniam, quis nostrud exercitation
-                \\ullamco laboris nisi ut aliquip ex ea commodo consequat.
-                \\Duis aute irure dolor in reprehenderit in voluptate velit esse
-                \\cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat
-                \\cupidatat non proident, sunt in culpa qui officia deserunt mollit
-                \\anim id est laborum."
-            },
-            .{
-                .data =
-                    \\YWdlLWVuY3J5cHRpb24ub3JnL3Yx
-                    \\-----END AGE ENCRYPTED FILE-----
-                ,
-                .expect =
-                    \\age-encryption.org/v1
-            },
-            .{
-                .data =
+            , .expect = "age-encryption.org/v1",
+        },
+        .{
+            .data =
+                \\YSBzdHJpbmcgdGhhdCBpcyA0NyBieXRlcyBsb25nIHRvIHRlc3QgZW5kIGNhc2U=
+                \\
+                \\-----END AGE ENCRYPTED FILE-----
+            , .expect = "a string that is 47 bytes long to test end case"
+        },
+        .{
+            .data =
                 \\aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1kUXc0dzlXZ1hjUQ==
                 \\-----END AGE ENCRYPTED FILE-----
-                ,
-                .expect = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            , .expect = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         },
     };
     for (cases) |case| {
@@ -339,6 +312,6 @@ test "fill" {
         var buf_decode = [_]u8{0} ** 512;
         const n = try reader.readAll(&buf_decode);
 
-    try t.expectEqualSlices(u8, case.expect, buf_decode[0..n]);
-}
+        try t.expectEqualSlices(u8, case.expect, buf_decode[0..n]);
+    }
 }

@@ -61,9 +61,20 @@ pub fn deinit(self: *@This()) void {
     self.output.close();
 }
 
-pub fn identity(buf: []u8, identity_files: []const []const u8) ![]u8 {
-    //TODO: handle multiple identity files
-    const file = try fs.cwd().openFile(identity_files[0], .{});
+pub fn recipient(buf: []u8, recipient_file: []const u8) ![]u8 {
+    const file = try fs.cwd().openFile(recipient_file, .{});
+    defer file.close();
+    var buf_reader = std.io.bufferedReader(file.reader());
+    if (try buf_reader.reader().readUntilDelimiterOrEof(buf, '\n')) |r| {
+        return r;
+    } else {
+        return error.EmptyRecipientFile;
+    }
+    return error.MissingRecipient;
+}
+
+pub fn identity(buf: []u8, identity_file: []const u8) ![]u8 {
+    const file = try fs.cwd().openFile(identity_file, .{});
     defer file.close();
     var buf_reader = std.io.bufferedReader(file.reader());
     if (try buf_reader.reader().readUntilDelimiterOrEof(buf, '\n')) |r| {
