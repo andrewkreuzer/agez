@@ -25,18 +25,18 @@ pub const Recipient = struct {
         X25519,
         scrypt,
 
-        pub fn fromString(s: []const u8) !@This() {
-            if (std.mem.eql(u8, s, "X25519")) {
+        pub fn fromStanzaArg(s: []const u8) !@This() {
+            if (std.mem.eql(u8, s, X25519.stanza_arg)) {
                 return .X25519;
-            } else if (std.mem.eql(u8, s, "scrypt")) {
+            } else if (std.mem.eql(u8, s, scrypt.stanza_arg)) {
                 return .scrypt;
             } else return error.InvalidRecipientType;
         }
 
-        fn toString(self: @This(), allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
+        fn toStanza(self: @This(), allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
             switch (self) {
-                .X25519 => return try X25519.toString(allocator, args, body),
-                .scrypt => return try scrypt.toString(allocator, args, body),
+                .X25519 => return try X25519.toStanza(allocator, args, body),
+                .scrypt => return try scrypt.toStanza(allocator, args, body),
             }
         }
 
@@ -55,10 +55,22 @@ pub const Recipient = struct {
         }
     };
 
+    pub fn fromPassphrase(allocator: Allocator, passphrase: []const u8, file_key: Key) !Self {
+        return try scrypt.fromPassphrase(allocator, passphrase, file_key);
+    }
+
+    pub fn fromAgePublicKey(allocator: Allocator, s: []const u8, file_key: Key) !Self {
+        return try X25519.fromPublicKey(allocator, s, file_key);
+    }
+
+    pub fn fromAgePrivateKey(allocator: Allocator, s: []const u8, file_key: Key) !Self {
+        return try X25519.fromPrivateKey(allocator, s, file_key);
+    }
+
     /// returns the stanza of a recipient. it's the
     /// callers responsibility to free the memory
-    pub fn toString(self: *Self, allocator: Allocator) ![]const u8 {
-        return self.type.toString(allocator, self.args.?, self.body.?);
+    pub fn toStanza(self: *Self, allocator: Allocator) ![]const u8 {
+        return self.type.toStanza(allocator, self.args.?, self.body.?);
     }
 
     /// Decrypts the file key from the recipients body
@@ -93,7 +105,7 @@ pub const Recipient = struct {
 const RecipientErrors = error{
     InvalidRecipient,
     InvalidRecipientType,
-    InvalidRecipientArgs
+    InvalidRecipientArgs,
 };
 
 test "unwrap" {

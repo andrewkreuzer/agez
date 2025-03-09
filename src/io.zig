@@ -1,40 +1,38 @@
 const std = @import("std");
+const io = std.io;
 const fs = std.fs;
 const exit = std.posix.exit;
+const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
 const File = std.fs.File;
 const BufferedReader = std.io.BufferedReader;
 const BufferedWriter = std.io.BufferedWriter;
 
 const cli = @import("cli.zig");
+const bech32 = @import("bech32.zig");
+const Key = @import("key.zig").Key;
+const Recipient = @import("recipient.zig").Recipient;
 
 input: File,
 output: File,
 buffered_reader: BufferedReader(4096, File.Reader),
 buffered_writer: BufferedWriter(4096, File.Writer),
+output_tty: bool,
 
-pub fn init(args: cli.Args) !@This() {
+pub fn init(input: ?[]const u8, output: ?[]const u8) !@This() {
     var input_file: File = undefined;
     var output_file: File = undefined;
 
-    if (args.input.value()) |path| {
+    if (input) |path| {
         input_file = try fs.cwd().openFile(path, .{});
     } else {
         input_file = std.io.getStdIn();
     }
 
-    if (args.output.value()) |path| {
+    if (output) |path| {
         output_file = try fs.cwd().createFile(path, .{ .truncate = true });
     } else {
         output_file = std.io.getStdOut();
-        if (output_file.isTty() and !args.decrypt.flag() and !args.armor.flag()) {
-            std.debug.print(
-                \\Output is a tty, it's not recommended to write arbitrary data to the terminal
-                \\use -o, --output to specify a file or redirect stdout
-                \\
-                , .{}
-            );
-            exit(1);
-        }
     }
 
     return .{
@@ -42,6 +40,7 @@ pub fn init(args: cli.Args) !@This() {
         .output = output_file,
         .buffered_reader = std.io.bufferedReader(input_file.reader()),
         .buffered_writer = std.io.bufferedWriter(output_file.writer()),
+        .output_tty = output_file.isTty(),
     };
 }
 
@@ -61,35 +60,26 @@ pub fn deinit(self: *@This()) void {
     self.output.close();
 }
 
-pub fn recipient(buf: []u8, recipient_file: []const u8) ![]u8 {
-    const file = try fs.cwd().openFile(recipient_file, .{});
-    defer file.close();
-    var buf_reader = std.io.bufferedReader(file.reader());
-    if (try buf_reader.reader().readUntilDelimiterOrEof(buf, '\n')) |r| {
-        return r;
-    } else {
-        return error.EmptyRecipientFile;
-    }
-    return error.MissingRecipient;
+pub fn openFile(file_name: []const u8) !File {
+    return try fs.cwd().openFile(file_name, .{});
 }
 
-pub fn identity(buf: []u8, identity_file: []const u8) ![]u8 {
-    const file = try fs.cwd().openFile(identity_file, .{});
+pub fn readFirstLine(buf: []u8, file_name: []const u8) ![]u8 {
+    const file = try fs.cwd().openFile(file_name, .{});
     defer file.close();
     var buf_reader = std.io.bufferedReader(file.reader());
     if (try buf_reader.reader().readUntilDelimiterOrEof(buf, '\n')) |r| {
         return r;
     } else {
-        return error.EmptyIdentityFile;
+        return error.EmptyFile;
     }
-    return error.MissingIdentity;
 }
 
 pub fn read_passphrase(buf: []u8) ![]u8 {
     var fbs = std.io.fixedBufferStream(buf);
     const pwriter = fbs.writer();
 
-    const tty = try std.fs.openFileAbsolute("/dev/tty", .{.mode = .read_write});
+    const tty = try std.fs.openFileAbsolute("/dev/tty", .{ .mode = .read_write });
     defer tty.close();
 
     const rtty = tty.reader();
@@ -114,6 +104,6 @@ pub fn read_passphrase(buf: []u8) ![]u8 {
 const FileErrors = enum {
     TtyInadviseable,
     OverwriteDenied,
-    EmpyIdentityFile,
+    EmpyFile,
     MissingIdentity,
 };

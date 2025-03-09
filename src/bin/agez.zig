@@ -1,9 +1,9 @@
 const std = @import("std");
 const exit = std.posix.exit;
+const ArrayList = std.ArrayList;
 
 const lib = @import("lib");
 const cli = lib.cli;
-const bech32 = lib.bech32;
 const Io = lib.Io;
 const Key = lib.Key;
 const Recipient = lib.Recipient;
@@ -17,86 +17,72 @@ pub fn main() !void {
     defer arena.deinit();
 
     const args = try cli.args(allocator);
-    var io = try Io.init(args);
+    const armored = args.armor.flag();
+    const decrypt = args.decrypt.flag();
+    const file_key: Key = try Key.initRandom(allocator, 16);
+    var io = try Io.init(args.input.value(), args.output.value());
     defer io.deinit();
 
-    const armored = args.armor.flag();
-    const file_key: Key = try Key.initRandom(allocator, 16);
+    if (io.output_tty and !args.decrypt.flag() and !armored) {
+        std.debug.print(
+            \\Output is a tty, it's not recommended to write arbitrary data to the terminal
+            \\use -o, --output to specify a file or redirect stdout
+            \\
+            , .{});
+        exit(1);
+    }
 
-    var recipients = std.ArrayList(Recipient).init(allocator);
+    var recipients = ArrayList(Recipient).init(allocator);
     if (args.recipient.values()) |values| for (values) |recipient| {
-        var recipient_buf: [90]u8 = undefined;
-        const decoded = try bech32.decode(&recipient_buf, lib.X25519.bech32_hrp_public, recipient);
-
-        var public_key: [32]u8 = undefined;
-        _ = try bech32.convertBits(&public_key, decoded.data, 5, 8, false);
-
-        var r = Recipient{ .type = .X25519 };
-        try r.wrap(allocator, file_key, &public_key);
-
+        const r = try Recipient.fromAgePublicKey(allocator, recipient, file_key);
         try recipients.append(r);
     };
-
-    if (args.recipients_file.values()) |values| for (values) |recipient| {
-        var recipient_file_buf = [_]u8{0} ** 90;
-        defer std.crypto.utils.secureZero(u8, &recipient_file_buf);
-        const recipient_file = try Io.recipient(&recipient_file_buf, recipient);
-
-        var recipient_buf: [90]u8 = undefined;
-        const decoded = try bech32.decode(&recipient_buf, "age", recipient_file);
-
-        var public_key: [32]u8 = undefined;
-        _ = try bech32.convertBits(&public_key, decoded.data, 5, 8, false);
-
-        var r = Recipient{ .type = .X25519 };
-        try r.wrap(allocator, file_key, &public_key);
-
-        try recipients.append(r);
+    if (args.recipients_file.values()) |files| for (files) |file_name| {
+        const f = try Io.openFile(file_name);
+        defer f.close();
+        const reader = f.reader();
+        var buf = [_]u8{0} ** 90;
+        var fbs = std.io.fixedBufferStream(&buf);
+        const writer = fbs.writer();
+        while (true) {
+            reader.streamUntilDelimiter(writer, '\n', buf.len) catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => return err,
+            };
+            const line = fbs.getWritten();
+            const recipient = try Recipient.fromAgePublicKey(allocator, line, file_key);
+            try recipients.append(recipient);
+            try fbs.seekTo(0);
+        }
     };
 
     const identities: ?[]Key = switch (args.passphrase.flag()) {
         true => blk: {
-            var ids = try allocator.alloc(Key, 1);
+            var id = try allocator.alloc(Key, 1);
             var passphrase_buf = [_]u8{0} ** 128;
             const passphrase = try Io.read_passphrase(&passphrase_buf);
             defer std.crypto.utils.secureZero(u8, passphrase);
-            ids[0] = try Key.init(allocator, passphrase);
-
-            var r = Recipient{ .type = .scrypt };
-            try r.wrap(allocator, file_key, passphrase);
+            id[0] = try Key.init(allocator, passphrase);
+            const r = try Recipient.fromPassphrase(allocator, passphrase, file_key);
             try recipients.append(r);
-
-            break :blk ids;
+            break :blk id;
         },
         false => blk: {
-            if (args.identity.values()) |id_files| {
-                for (id_files) |id_file| {
-                    var ids = std.ArrayList(Key).init(allocator);
+            if (args.identity.values()) |files| {
+                var ids = ArrayList(Key).init(allocator);
+                for (files) |file_name| {
                     var identity_buf = [_]u8{0} ** 90;
                     defer std.crypto.utils.secureZero(u8, &identity_buf);
-                    var recipient_buf: [90]u8 = undefined;
-                    defer std.crypto.utils.secureZero(u8, &recipient_buf);
-                    var secret_key: [32]u8 = undefined;
-                    defer std.crypto.utils.secureZero(u8, &secret_key);
 
-                    const id = try Io.identity(&identity_buf, id_file);
+                    const id = try Io.readFirstLine(&identity_buf, file_name);
                     const key = try Key.init(allocator, id);
                     try ids.append(key);
 
-                    var r = Recipient{ .type = .X25519 };
-                    // const public_key = try key.public();
-
-                    const decoded = try bech32.decode(&recipient_buf, lib.X25519.bech32_hrp_private, id);
-                    _ = try bech32.convertBits(&secret_key, decoded.data, 5, 8, false);
-                    var public_key = try std.crypto.dh.X25519.recoverPublicKey(secret_key);
-
-                    try r.wrap(allocator, file_key, &public_key);
+                    const r = try Recipient.fromAgePrivateKey(allocator, id, file_key);
                     try recipients.append(r);
-
-                    break :blk try ids.toOwnedSlice();
                 }
-            }
-            break :blk null;
+                break :blk try ids.toOwnedSlice();
+            } else break :blk null;
         }
     };
     defer {
@@ -108,7 +94,7 @@ pub fn main() !void {
         }
     }
 
-    if (args.decrypt.flag()) {
+    if (decrypt) {
         try lib.decrypt(allocator, &io, identities.?);
     } else {
         try lib.encrypt(allocator, &io, file_key, recipients, armored);

@@ -48,7 +48,7 @@ pub const Age = struct {
     pub fn open(self: *Self, allocator: Allocator, identity: []const u8) !Key {
         for (self.recipients.items) |*r| {
             return r.unwrap(allocator, identity) catch |err| switch (err) {
-                error.AuthenticationFailed => { continue; },
+                error.AuthenticationFailed => continue,
                 else => return err,
             };
         }
@@ -326,7 +326,7 @@ pub fn AgeReader(
                         const recipient_type = args.swapRemove(0);
                         defer self.allocator.free(recipient_type);
                         try age.recipients.append(.{
-                            .type = try RecipientType.fromString(recipient_type),
+                            .type = try RecipientType.fromStanzaArg(recipient_type),
                             .args = try args.toOwnedSlice(),
                             .body = body,
                         });
@@ -415,7 +415,7 @@ pub fn AgeWriter(comptime WriterType: type) type {
             defer recip.deinit();
             var rwriter = recip.writer();
             for (age.recipients.items) |*r| {
-                const rstring = try r.toString(self.allocator);
+                const rstring = try r.toStanza(self.allocator);
                 _ = try rwriter.write(rstring);
                 self.allocator.free(rstring);
             }

@@ -8,6 +8,7 @@ pub const cli = @import("cli.zig");
 pub const Io = @import("io.zig");
 pub const Key = @import("key.zig").Key;
 pub const Recipient = @import("recipient.zig").Recipient;
+pub const RecipientType = Recipient.Type;
 pub const X25519 = @import("X25519.zig");
 
 const armor = @import("armor.zig");
@@ -31,10 +32,10 @@ pub fn encrypt(
         .version = .v1,
         .recipients = recipients,
     };
-    var header_writer = AgeWriter(@TypeOf(writer)).init(allocator, writer, armored);
-    try header_writer.write(&key, age);
-    _ = try key.ageEncrypt(reader, header_writer.w);
-    header_writer.deinit();
+    var age_writer = AgeWriter(@TypeOf(writer)).init(allocator, writer, armored);
+    try age_writer.write(&key, age);
+    _ = try key.ageEncrypt(reader, age_writer.w);
+    age_writer.deinit();
 }
 
 pub fn decrypt(
@@ -51,12 +52,9 @@ pub fn decrypt(
     var age = try age_reader.read();
     defer age.deinit(allocator);
 
-    const file_key: Key = blk: {
-        for (identities) |id| {
-            break :blk age.open(allocator, id.key()) catch continue;
-        }
-        return error.NoIdentityMatch;
-    };
+    const file_key: Key = for (identities) |id| {
+        break age.open(allocator, id.key()) catch continue;
+    } else return error.NoIdentityMatch;
     defer file_key.deinit(allocator);
 
     if (!age.verify_hmac(allocator, &file_key)) {

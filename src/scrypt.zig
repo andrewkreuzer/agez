@@ -6,11 +6,12 @@ const Allocator = std.mem.Allocator;
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
 
+pub const stanza_arg = "scrypt";
 const key_label = "age-encryption.org/v1/scrypt";
 const rounds = 8;
 const parallization = 1;
 
-pub fn toString(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
+pub fn toStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
     var buf = [_]u8{0} ** 128;
     var fbs = std.io.fixedBufferStream(&buf);
     const writer = fbs.writer();
@@ -23,6 +24,12 @@ pub fn toString(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
     );
 
     return try allocator.dupe(u8, fbs.getWritten());
+}
+
+pub fn fromPassphrase(allocator: Allocator, passphrase: []const u8, file_key: Key) !Recipient {
+    var r = Recipient{ .type = .scrypt };
+    try r.wrap(allocator, file_key, passphrase);
+    return r;
 }
 
 /// Decrypts the recipients body and returns the file key

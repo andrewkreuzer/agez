@@ -8,12 +8,13 @@ const bech32 = @import("bech32.zig");
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
 
+pub const stanza_arg = "X25519";
 pub const bech32_hrp_private = "AGE-SECRET-KEY-";
-pub const bech32_hrp_public = "age";
+const bech32_hrp_public = "age";
 pub const bech32_max_len = 90;
 const key_label = "age-encryption.org/v1/X25519";
 
-pub fn toString(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
+pub fn toStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
     var buf = [_]u8{0} ** 97;
     var fbs = std.io.fixedBufferStream(&buf);
     const writer = fbs.writer();
@@ -26,6 +27,33 @@ pub fn toString(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
     );
 
     return try allocator.dupe(u8, &buf);
+}
+
+pub fn fromPublicKey(allocator: Allocator, s: []const u8, file_key: Key) !Recipient {
+    var recipient_buf: [90]u8 = undefined;
+    const decoded = try bech32.decode(&recipient_buf, bech32_hrp_public, s);
+
+    var public_key: [32]u8 = undefined;
+    _ = try bech32.convertBits(&public_key, decoded.data, 5, 8, false);
+
+    var recipient = Recipient{ .type = .X25519 };
+    try recipient.wrap(allocator, file_key, &public_key);
+    return recipient;
+}
+
+pub fn fromPrivateKey(allocator: Allocator, s: []const u8, file_key: Key) !Recipient {
+    var recipient_buf: [90]u8 = undefined;
+    defer std.crypto.utils.secureZero(u8, &recipient_buf);
+    var secret_key: [32]u8 = undefined;
+    defer std.crypto.utils.secureZero(u8, &secret_key);
+
+    const decoded = try bech32.decode(&recipient_buf, bech32_hrp_private, s);
+    _ = try bech32.convertBits(&secret_key, decoded.data, 5, 8, false);
+    var public_key = try std.crypto.dh.X25519.recoverPublicKey(secret_key);
+
+    var r = Recipient{ .type = .X25519 };
+    try r.wrap(allocator, file_key, &public_key);
+    return r;
 }
 
 /// Decrypts the recipients body and returns the file key
