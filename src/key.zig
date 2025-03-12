@@ -2,11 +2,13 @@ const std = @import("std");
 const assert = std.debug.assert;
 const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 const hkdf = std.crypto.kdf.hkdf.HkdfSha256;
+const Ed25519 = std.crypto.sign.Ed25519;
 const Allocator = @import("std").mem.Allocator;
 
 pub const Key = struct {
     const Self = @This();
     k: []u8,
+    pk: ?[]u8 = null,
 
     const nonce_length = 16;
     const chacha_tag_length = ChaCha20Poly1305.tag_length;
@@ -30,11 +32,20 @@ pub const Key = struct {
         return k;
     }
 
+    pub fn initKeyPair(allocator: Allocator, key_pair: Ed25519.KeyPair) !Key {
+        const k: Key = .{
+            .k = try allocator.dupe(u8, &key_pair.secret_key.toBytes()),
+            .pk = try allocator.dupe(u8, &key_pair.public_key.toBytes()),
+        };
+        return k;
+    }
+
     /// Deallocates a Key ensuring the key
     /// is zeroed before freeing the memory
     pub fn deinit(self: *const Self, allocator: Allocator) void {
         std.crypto.utils.secureZero(u8, self.k);
         allocator.free(self.k);
+        if (self.pk) |pk| { allocator.free(pk); }
     }
 
     /// return a reference to the key
@@ -44,8 +55,7 @@ pub const Key = struct {
 
     /// return the public key
     pub fn public(self: *const Self) ![32]u8 {
-        const k: [32]u8 = self.k[0..chacha_key_length].*;
-        return try std.crypto.dh.X25519.recoverPublicKey(k);
+        return self.pk;
     }
 
     /// Encrypts the message using ChaCha20Poly1305

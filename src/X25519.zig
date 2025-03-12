@@ -177,7 +177,7 @@ pub fn wrap(allocator: Allocator, file_key: Key, public_key: []const u8) !Recipi
         0x0002 // GRND_RANDOM
     );
 
-    const ephemeral_share = try X25519.scalarmult(ephemeral_secret, X25519.Curve.basePoint.toBytes());
+    const ephemeral_share = try X25519.recoverPublicKey(ephemeral_secret);
     var shared_secret = try X25519.scalarmult(ephemeral_secret, public_key[0..32].*);
     defer std.crypto.utils.secureZero(u8, &shared_secret);
 

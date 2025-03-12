@@ -45,7 +45,7 @@ pub const Age = struct {
         return std.mem.eql(u8, self.mac.?, encoded);
     }
 
-    pub fn open(self: *Self, allocator: Allocator, identity: []const u8) !Key {
+    pub fn unwrap(self: *Self, allocator: Allocator, identity: []const u8) !Key {
         for (self.recipients.items) |*r| {
             return r.unwrap(allocator, identity) catch |err| switch (err) {
                 error.AuthenticationFailed => continue,

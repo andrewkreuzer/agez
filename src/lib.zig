@@ -8,8 +8,9 @@ pub const cli = @import("cli.zig");
 pub const Io = @import("io.zig");
 pub const Key = @import("key.zig").Key;
 pub const Recipient = @import("recipient.zig").Recipient;
-pub const RecipientType = Recipient.Type;
 pub const X25519 = @import("X25519.zig");
+pub const ssh = @import("ssh.zig");
+pub const PemDecoder = @import("ssh.zig").PemDecoder;
 
 const armor = @import("armor.zig");
 const format = @import("format.zig");
@@ -53,7 +54,10 @@ pub fn decrypt(
     defer age.deinit(allocator);
 
     const file_key: Key = for (identities) |id| {
-        break age.open(allocator, id.key()) catch continue;
+        break age.unwrap(allocator, id.key()) catch |err| {
+            std.debug.print("failed to unwrap: {any}\n", .{err});
+            continue;
+        };
     } else return error.NoIdentityMatch;
     defer file_key.deinit(allocator);
 

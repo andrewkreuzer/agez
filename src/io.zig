@@ -2,16 +2,11 @@ const std = @import("std");
 const io = std.io;
 const fs = std.fs;
 const exit = std.posix.exit;
-const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
 const File = std.fs.File;
 const BufferedReader = std.io.BufferedReader;
 const BufferedWriter = std.io.BufferedWriter;
 
 const cli = @import("cli.zig");
-const bech32 = @import("bech32.zig");
-const Key = @import("key.zig").Key;
-const Recipient = @import("recipient.zig").Recipient;
 
 input: File,
 output: File,

@@ -5,10 +5,10 @@ const Allocator = std.mem.Allocator;
 const Key = @import("key.zig").Key;
 const X25519 = @import("X25519.zig");
 const scrypt = @import("scrypt.zig");
+const ssh = @import("ssh.zig");
 
 pub const Recipient = struct {
     const Self = @This();
-    const stanza_prefix = "-> ";
 
     type: Type,
     args: ?[][]u8 = null,
@@ -24,12 +24,15 @@ pub const Recipient = struct {
     pub const Type = enum {
         X25519,
         scrypt,
+        @"ssh-ed25519",
 
         pub fn fromStanzaArg(s: []const u8) !@This() {
             if (std.mem.eql(u8, s, X25519.stanza_arg)) {
                 return .X25519;
             } else if (std.mem.eql(u8, s, scrypt.stanza_arg)) {
                 return .scrypt;
+            } else if (std.mem.eql(u8, s, ssh.stanza_arg)) {
+                return .@"ssh-ed25519";
             } else return error.InvalidRecipientType;
         }
 
@@ -37,6 +40,7 @@ pub const Recipient = struct {
             switch (self) {
                 .X25519 => return try X25519.toStanza(allocator, args, body),
                 .scrypt => return try scrypt.toStanza(allocator, args, body),
+                .@"ssh-ed25519" => return try ssh.toStanza(allocator, args, body),
             }
         }
 
@@ -44,6 +48,7 @@ pub const Recipient = struct {
             switch (self) {
                 .X25519 => return try X25519.unwrap(allocator, identity, args, body),
                 .scrypt => return try scrypt.unwrap(allocator, identity, args, body),
+                .@"ssh-ed25519" => return try ssh.unwrap(allocator, identity, args, body),
             }
         }
 
@@ -51,6 +56,7 @@ pub const Recipient = struct {
             return switch (self) {
                 .X25519 => try X25519.wrap(allocator, file_key, key),
                 .scrypt => try scrypt.wrap(allocator, file_key, key),
+                .@"ssh-ed25519" => try ssh.wrap(allocator, file_key, key)
             };
         }
     };
@@ -65,6 +71,10 @@ pub const Recipient = struct {
 
     pub fn fromAgePrivateKey(allocator: Allocator, s: []const u8, file_key: Key) !Self {
         return try X25519.fromPrivateKey(allocator, s, file_key);
+    }
+
+    pub fn fromSshPublicKey(allocator: Allocator, pk: []const u8, file_key: Key) !Self {
+        return try ssh.fromPublicKey(allocator, pk, file_key);
     }
 
     /// returns the stanza of a recipient. it's the
@@ -105,7 +115,6 @@ pub const Recipient = struct {
 const RecipientErrors = error{
     InvalidRecipient,
     InvalidRecipientType,
-    InvalidRecipientArgs,
 };
 
 test "unwrap" {

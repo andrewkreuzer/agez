@@ -1,12 +1,15 @@
 const std = @import("std");
+const mem = std.mem;
 const exit = std.posix.exit;
 const ArrayList = std.ArrayList;
 
 const lib = @import("lib");
 const cli = lib.cli;
+const ssh = lib.ssh;
 const Io = lib.Io;
 const Key = lib.Key;
 const Recipient = lib.Recipient;
+const PemDecoder = lib.PemDecoder;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -23,7 +26,7 @@ pub fn main() !void {
     var io = try Io.init(args.input.value(), args.output.value());
     defer io.deinit();
 
-    if (io.output_tty and !args.decrypt.flag() and !armored) {
+    if (io.output_tty and !decrypt and !armored) {
         std.debug.print(
             \\Output is a tty, it's not recommended to write arbitrary data to the terminal
             \\use -o, --output to specify a file or redirect stdout
@@ -74,12 +77,27 @@ pub fn main() !void {
                     var identity_buf = [_]u8{0} ** 90;
                     defer std.crypto.utils.secureZero(u8, &identity_buf);
 
-                    const id = try Io.readFirstLine(&identity_buf, file_name);
-                    const key = try Key.init(allocator, id);
-                    try ids.append(key);
+                    const line = try Io.readFirstLine(&identity_buf, file_name);
+                    const prefix = line[0..14];
+                    if (line.len == 0) continue;
+                    if (mem.eql(u8, prefix[0..PemDecoder.header.len], PemDecoder.header)) {
+                        var in_buf = [_]u8{0} ** PemDecoder.max_key_size;
+                        const f = try Io.openFile(file_name);
+                        const reader = f.reader();
+                        const n = try reader.readAll(&in_buf);
 
-                    const r = try Recipient.fromAgePrivateKey(allocator, id, file_key);
-                    try recipients.append(r);
+                        const ed25519_key_pair = try ssh.parseOpenSSHPrivateKey(in_buf[0..n]);
+                        const key = try Key.initKeyPair(allocator, ed25519_key_pair.ed25519);
+                        try ids.append(key);
+                        const r = try Recipient.fromSshPublicKey(allocator, key.pk.?, file_key);
+                        try recipients.append(r);
+                    } else {
+                        const key = try Key.init(allocator, line);
+                        try ids.append(key);
+
+                        const r = try Recipient.fromAgePrivateKey(allocator, line, file_key);
+                        try recipients.append(r);
+                    }
                 }
                 break :blk try ids.toOwnedSlice();
             } else break :blk null;
