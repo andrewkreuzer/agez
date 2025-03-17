@@ -9,12 +9,14 @@ pub const Io = @import("io.zig");
 pub const Key = @import("key.zig").Key;
 pub const Recipient = @import("recipient.zig").Recipient;
 pub const X25519 = @import("X25519.zig");
-pub const ssh = @import("ssh.zig");
-pub const PemDecoder = @import("ssh.zig").PemDecoder;
+pub const ssh = @import("ssh/lib.zig");
 
 const armor = @import("armor.zig");
 const format = @import("format.zig");
-const Age = format.Age;
+const _age = @import("age.zig");
+const Age = _age.Age;
+const ageEncrypt = _age.ageEncrypt;
+const ageDecrypt = _age.ageDecrypt;
 const AgeReader = format.AgeReader;
 const AgeWriter = format.AgeWriter;
 const Args = cli.Args;
@@ -22,7 +24,7 @@ const Args = cli.Args;
 pub fn encrypt(
     allocator: Allocator,
     io: *Io,
-    key: Key,
+    file_key: Key,
     recipients: ArrayList(Recipient),
     armored: bool,
 ) !void {
@@ -34,8 +36,8 @@ pub fn encrypt(
         .recipients = recipients,
     };
     var age_writer = AgeWriter(@TypeOf(writer)).init(allocator, writer, armored);
-    try age_writer.write(&key, age);
-    _ = try key.ageEncrypt(reader, age_writer.w);
+    try age_writer.write(&file_key, age);
+    _ = try ageEncrypt(&file_key, reader, age_writer.w);
     age_writer.deinit();
 }
 
@@ -54,7 +56,7 @@ pub fn decrypt(
     defer age.deinit(allocator);
 
     const file_key: Key = for (identities) |id| {
-        break age.unwrap(allocator, id.key()) catch |err| {
+        break age.unwrap(allocator, id) catch |err| {
             std.debug.print("failed to unwrap: {any}\n", .{err});
             continue;
         };
@@ -65,7 +67,7 @@ pub fn decrypt(
         std.debug.print("hmac mismatch\n", .{});
     }
 
-    _ = try file_key.ageDecrypt(age_reader.r, writer);
+    _ = try ageDecrypt(&file_key, age_reader.r, writer);
 }
 
 test {

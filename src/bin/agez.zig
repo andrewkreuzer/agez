@@ -5,11 +5,11 @@ const ArrayList = std.ArrayList;
 
 const lib = @import("lib");
 const cli = lib.cli;
-const ssh = lib.ssh;
 const Io = lib.Io;
 const Key = lib.Key;
+const SshParser = lib.ssh.Parser;
+const PemDecoder = lib.ssh.PemDecoder;
 const Recipient = lib.Recipient;
-const PemDecoder = lib.PemDecoder;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -22,7 +22,7 @@ pub fn main() !void {
     const args = try cli.args(allocator);
     const armored = args.armor.flag();
     const decrypt = args.decrypt.flag();
-    const file_key: Key = try Key.initRandom(allocator, 16);
+    const file_key: Key = try Key.init(allocator, 16);
     var io = try Io.init(args.input.value(), args.output.value());
     defer io.deinit();
 
@@ -85,11 +85,9 @@ pub fn main() !void {
                         const f = try Io.openFile(file_name);
                         const reader = f.reader();
                         const n = try reader.readAll(&in_buf);
-
-                        const ed25519_key_pair = try ssh.parseOpenSSHPrivateKey(in_buf[0..n]);
-                        const key = try Key.initKeyPair(allocator, ed25519_key_pair.ed25519);
+                        const key = try SshParser.parseOpenSshPrivateKey(in_buf[0..n]);
                         try ids.append(key);
-                        const r = try Recipient.fromSshPublicKey(allocator, key.pk.?, file_key);
+                        const r = try Recipient.fromSshKey(allocator, key, file_key);
                         try recipients.append(r);
                     } else {
                         const key = try Key.init(allocator, line);

@@ -3,6 +3,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Key = @import("key.zig").Key;
+const KeyType = @import("key.zig").KeyType;
 const X25519 = @import("X25519.zig");
 const scrypt = @import("scrypt.zig");
 const ssh = @import("ssh.zig");
@@ -25,14 +26,17 @@ pub const Recipient = struct {
         X25519,
         scrypt,
         @"ssh-ed25519",
+        rsa,
 
         pub fn fromStanzaArg(s: []const u8) !@This() {
             if (std.mem.eql(u8, s, X25519.stanza_arg)) {
                 return .X25519;
             } else if (std.mem.eql(u8, s, scrypt.stanza_arg)) {
                 return .scrypt;
-            } else if (std.mem.eql(u8, s, ssh.stanza_arg)) {
+            } else if (std.mem.eql(u8, s, ssh.ed25519_stanza_arg)) {
                 return .@"ssh-ed25519";
+            } else if (std.mem.eql(u8, s, ssh.rsa_stanza_arg)) {
+                return .rsa;
             } else return error.InvalidRecipientType;
         }
 
@@ -40,15 +44,17 @@ pub const Recipient = struct {
             switch (self) {
                 .X25519 => return try X25519.toStanza(allocator, args, body),
                 .scrypt => return try scrypt.toStanza(allocator, args, body),
-                .@"ssh-ed25519" => return try ssh.toStanza(allocator, args, body),
+                .@"ssh-ed25519" => return try ssh.ed25519ToStanza(allocator, args, body),
+                .rsa => return try ssh.rsaToStanza(allocator, args, body),
             }
         }
 
-        fn unwrap(self: @This(), allocator: Allocator, identity: []const u8, args: [][]u8, body: []u8) !Key {
+        fn unwrap(self: @This(), allocator: Allocator, identity: Key, args: [][]u8, body: []u8) !Key {
             switch (self) {
-                .X25519 => return try X25519.unwrap(allocator, identity, args, body),
-                .scrypt => return try scrypt.unwrap(allocator, identity, args, body),
-                .@"ssh-ed25519" => return try ssh.unwrap(allocator, identity, args, body),
+                .X25519 => return try X25519.unwrap(allocator, identity.key().bytes, args, body),
+                .scrypt => return try scrypt.unwrap(allocator, identity.key().bytes, args, body),
+                .@"ssh-ed25519" => return try ssh.ed25519Unwrap(allocator, identity.key().bytes, args, body),
+                .rsa => return try ssh.rsaUnwrap(allocator, identity.key().rsa.private_key, args, body),
             }
         }
 
@@ -56,7 +62,9 @@ pub const Recipient = struct {
             return switch (self) {
                 .X25519 => try X25519.wrap(allocator, file_key, key),
                 .scrypt => try scrypt.wrap(allocator, file_key, key),
-                .@"ssh-ed25519" => try ssh.wrap(allocator, file_key, key)
+                .@"ssh-ed25519" => try ssh.ed25519Wrap(allocator, file_key, key),
+                .rsa => unreachable,
+                // .rsa => try ssh.rsaWrap(allocator, file_key, key),
             };
         }
     };
@@ -73,8 +81,12 @@ pub const Recipient = struct {
         return try X25519.fromPrivateKey(allocator, s, file_key);
     }
 
-    pub fn fromSshPublicKey(allocator: Allocator, pk: []const u8, file_key: Key) !Self {
-        return try ssh.fromPublicKey(allocator, pk, file_key);
+    pub fn fromSshKey(allocator: Allocator, key: Key, file_key: Key) !Self {
+        switch (key) {
+            .ed25519 => |ed25519| return try ssh.ed25519FromPublicKey(allocator, &ed25519.public_key.bytes, file_key),
+            .rsa => |rsa| return try ssh.rsaFromPublicKey(allocator, rsa.public_key, file_key),
+            else => return error.FromKeyNotSupported,
+        }
     }
 
     /// returns the stanza of a recipient. it's the
@@ -86,7 +98,7 @@ pub const Recipient = struct {
     /// Decrypts the file key from the recipients body
     /// it is the callers responsibility to ensure safety
     /// and deallocation of the decrypted file key
-    pub fn unwrap(self: *Self, allocator: Allocator, identity: []const u8) !Key {
+    pub fn unwrap(self: *Self, allocator: Allocator, identity: Key) !Key {
         self.state = .unwrapped;
         return self.type.unwrap(allocator, identity, self.args.?, self.body.?);
     }
@@ -115,6 +127,7 @@ pub const Recipient = struct {
 const RecipientErrors = error{
     InvalidRecipient,
     InvalidRecipientType,
+    FromKeyNotSupported,
 };
 
 test "unwrap" {
@@ -129,12 +142,13 @@ test "unwrap" {
     recipient.args.?[0] = try allocator.dupe(u8, "TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc");
     defer recipient.deinit(allocator);
 
-    const identity = "AGE-SECRET-KEY-1XMWWC06LY3EE5RYTXM9MFLAZ2U56JJJ36S0MYPDRWSVLUL66MV4QX3S7F6";
-    var file_key = try recipient.unwrap(allocator, identity);
+    var identity = "AGE-SECRET-KEY-1XMWWC06LY3EE5RYTXM9MFLAZ2U56JJJ36S0MYPDRWSVLUL66MV4QX3S7F6".*;
+    const id: Key = .{ .slice = .{ .k = &identity } };
+    var file_key = try recipient.unwrap(allocator, id);
     defer file_key.deinit(allocator);
 
     try t.expect(recipient.state == .unwrapped);
-    try t.expectEqualSlices(u8, file_key.key(), "YELLOW SUBMARINE");
+    try t.expectEqualSlices(u8, file_key.key().bytes, "YELLOW SUBMARINE");
 }
 
 test "wrap" {
@@ -152,7 +166,7 @@ test "wrap" {
 
     defer recipient.deinit(allocator);
 
-    var file_key = Key{ .k = try allocator.dupe(u8, "YELLOW SUBMARINE") };
+    var file_key: Key = .{ .slice = .{ .k = try allocator.dupe(u8, "YELLOW SUBMARINE") } };
     defer file_key.deinit(allocator);
 
     const identity = "AGE-SECRET-KEY-1XMWWC06LY3EE5RYTXM9MFLAZ2U56JJJ36S0MYPDRWSVLUL66MV4QX3S7F6";

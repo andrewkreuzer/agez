@@ -1,20 +1,68 @@
 const std = @import("std");
+const exit = std.posix.exit;
 const mem = std.mem;
 const hkdf = std.crypto.kdf.hkdf.HkdfSha256;
 const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 const X25519 = std.crypto.dh.X25519;
-const Ed25519 = std.crypto.sign.Ed25519;
 const Sha512 = std.crypto.hash.sha2.Sha512;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const Allocator = std.mem.Allocator;
 
 const Key = @import("key.zig").Key;
+const Rsa = @import("ssh/rsa.zig");
 const Recipient = @import("recipient.zig").Recipient;
+const Parser = @import("ssh/lib.zig").Parser;
+const PemDecoder = @import("ssh/lib.zig").PemDecoder;
 
-pub const stanza_arg = "ssh-ed25519";
-const key_label = "age-encryption.org/v1/ssh-ed25519";
+pub const ed25519_stanza_arg = "ssh-ed25519";
+pub const rsa_stanza_arg = "ssh-rsa";
+const ed25519_key_label = "age-encryption.org/v1/ssh-ed25519";
+const rsa_key_label = "age-encryption.org/v1/ssh-rsa";
 
-pub fn toStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
+pub fn rsaToStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
+    var buf: [109]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const writer = fbs.writer();
+    try std.fmt.format(
+        writer,
+        \\-> ssh-rsa {s} {s}
+        \\{s}
+        ,.{args[0], args[1], body}
+    );
+    return try allocator.dupe(u8, &buf);
+}
+
+pub fn rsaFromPublicKey(allocator: Allocator, pk: Rsa.PublicKey, file_key: Key) !Recipient {
+    // var r = Recipient{ .type = .rsa };
+    // try r.wrap(allocator, file_key, pk);
+    // return r;
+    return rsaWrap(allocator, file_key, pk);
+}
+
+pub fn rsaUnwrap(allocator: Allocator, private_key: Rsa.SecretKey, args: [][]u8, body: []u8) !Key {
+    _ = args;
+
+    var Decoder = PemDecoder{};
+    var out_buf: [PemDecoder.max_key_size]u8 = undefined;
+    const b = try Decoder.decode_no_pad(&out_buf, body);
+
+    const file_key: Key = .{
+        .slice = .{ .k = try allocator.alloc(u8, 16) }
+    };
+    try private_key.decryptOAEP(file_key.slice.k, b, rsa_key_label);
+
+    return file_key;
+}
+
+pub fn rsaWrap(allocator: Allocator, file_key: Key, public_key: Rsa.PublicKey) !Recipient {
+    _ = allocator;
+    _ = public_key;
+    _ = file_key;
+    var r = Recipient{ .type = .rsa };
+    _ = &r;
+    return r;
+}
+pub fn ed25519ToStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
     var buf: [109]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     const writer = fbs.writer();
@@ -29,7 +77,7 @@ pub fn toStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
     return try allocator.dupe(u8, &buf);
 }
 
-pub fn fromPublicKey(allocator: Allocator, pk: []const u8, file_key: Key) !Recipient {
+pub fn ed25519FromPublicKey(allocator: Allocator, pk: []const u8, file_key: Key) !Recipient {
     var r = Recipient{ .type = .@"ssh-ed25519" };
     try r.wrap(allocator, file_key, pk);
     return r;
@@ -37,7 +85,7 @@ pub fn fromPublicKey(allocator: Allocator, pk: []const u8, file_key: Key) !Recip
 
 
 /// Decrypts the recipients body and returns the file key
-pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []u8) !Key {
+pub fn ed25519Unwrap(allocator: Allocator, private_key: []const u8, args: [][]u8, body: []u8) !Key {
     // derived from the shared secret and salt
     // decrypts the file key from the recipients body
     var key: [32]u8 = undefined;
@@ -78,24 +126,24 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
 
     const Decoder = std.base64.standard_no_pad.Decoder;
     Decoder.decode(&rpk_ssh_tag, args[1]) catch {
-        return error.InvalidSSHArgument;
+        return error.InvalidSshArgument;
     };
     Decoder.decode(&epk, args[0]) catch {
-        return error.InvalidSSHArgument;
+        return error.InvalidSshArgument;
     };
     Decoder.decode(&file_key_enc, body) catch {
-        return error.InvalidSSHBody;
+        return error.InvalidSshBody;
     };
 
-    const pk = identity[32..64];
-    try ed25519SshFormat(&pk_ssh, pk);
+    const pk = private_key[32..64];
+    try Parser.ed25519SshFormat(&pk_ssh, pk);
     Sha256.hash(&pk_ssh, &pk_ssh_tag, .{});
     if (!mem.eql(u8, &rpk_ssh_tag, pk_ssh_tag[0..4])) {
-        return error.InvalidSSHFingerprint;
+        return error.InvalidSshFingerprint;
     }
 
     var rk_hash: [Sha512.digest_length]u8 = undefined;
-    Sha512.hash(identity[0..32], &rk_hash, .{});
+    Sha512.hash(private_key[0..32], &rk_hash, .{});
     const rk: [32]u8 = rk_hash[0..32].*;
     defer std.crypto.utils.secureZero(u8, &rk_hash);
 
@@ -105,7 +153,7 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
         var tweak: [32]u8 = undefined;
         hkdf.expand(
             &tweak,
-            key_label,
+            ed25519_key_label,
             hkdf.extract(&pk_ssh, &[_]u8{})
         );
         break :blk try X25519.scalarmult(
@@ -119,17 +167,17 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
     @memcpy(salt[32..], &rpk);
 
     const k = hkdf.extract(&salt, &shared_secret);
-    hkdf.expand(&key, key_label, k);
+    hkdf.expand(&key, ed25519_key_label, k);
 
     const tag_start = file_key_enc.len - ChaCha20Poly1305.tag_length;
     @memcpy(&tag, file_key_enc[tag_start..]);
 
     const payload = file_key_enc[0..tag_start];
     const file_key: Key = .{
-        .k = try allocator.alloc(u8, payload.len),
+        .slice = .{ .k = try allocator.alloc(u8, payload.len), }
     };
 
-    try ChaCha20Poly1305.decrypt(file_key.k, payload, tag, &ad, nonce, key);
+    try ChaCha20Poly1305.decrypt(file_key.slice.k, payload, tag, &ad, nonce, key);
 
     return file_key;
 }
@@ -137,7 +185,7 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
 /// Encrypts the file key in the recipients body
 /// and populates the recipients type, args, and body
 /// caller is responsible for deinit on the reciepient
-pub fn wrap(allocator: Allocator, file_key: Key, public_key: []const u8) !Recipient {
+pub fn ed25519Wrap(allocator: Allocator, file_key: Key, public_key: []const u8) !Recipient {
     // derived from the shared secret and salt
     // encrypts the file key in the recipients body
     var key: [32]u8 = undefined;
@@ -195,14 +243,14 @@ pub fn wrap(allocator: Allocator, file_key: Key, public_key: []const u8) !Recipi
         break :blk rpk_x.toBytes();
     };
 
-    try ed25519SshFormat(&pk_ssh, public_key);
+    try Parser.ed25519SshFormat(&pk_ssh, public_key);
     Sha256.hash(&pk_ssh, &pk_tag, .{});
 
     var shared_secret = blk: {
         var tweak: [32]u8 = undefined;
         hkdf.expand(
             &tweak,
-            key_label,
+            ed25519_key_label,
             hkdf.extract(&pk_ssh, &[_]u8{})
         );
         break :blk try X25519.scalarmult(
@@ -216,9 +264,9 @@ pub fn wrap(allocator: Allocator, file_key: Key, public_key: []const u8) !Recipi
     @memcpy(salt[32..], &rpk);
 
     const k = hkdf.extract(&salt, &shared_secret);
-    hkdf.expand(&key, key_label, k);
+    hkdf.expand(&key, ed25519_key_label, k);
 
-    ChaCha20Poly1305.encrypt(file_key_enc[0..16], &tag, file_key.key(), &ad, nonce, key);
+    ChaCha20Poly1305.encrypt(file_key_enc[0..16], &tag, file_key.key().bytes, &ad, nonce, key);
 
     @memcpy(file_key_enc[16..], &tag);
 
@@ -238,167 +286,8 @@ pub fn wrap(allocator: Allocator, file_key: Key, public_key: []const u8) !Recipi
     };
 }
 
-const SSHErrors = error{
-    InvalidSSHKey,
-    InvalidSSHFingerprint,
-    InvalidSSHIdentity,
-    InvalidSSHArgument,
-    InvalidSSHBody,
-    InvalidKeyCount,
+const SshErrors = error{
+    InvalidSshFingerprint,
+    InvalidSshArgument,
+    InvalidSshBody,
 };
-
-const EncryptedPrivateKeySpec = struct {
-    ciphername: []u8,
-    kdfname: []u8,
-    kdf: ?[]u8,
-    keys: u32,
-    public_key: []u8,
-    private_key: []u8,
-};
-
-const SshPrivateKeySpec = struct {
-    check1: u32,
-    check2: u32,
-    key_type: []u8,
-    rest_key_data: []u8,
-};
-
-const SshEd25519PrivateKey = struct {
-    public_key: []u8,
-    private_key: []u8,
-    comment: []u8,
-    rest_padding: []u8,
-};
-
-const SshKeyTypes = union(enum) {
-    ed25519: Ed25519.KeyPair,
-    unsupported,
-};
-
-pub fn parseOpenSSHPrivateKey(data: []u8) !SshKeyTypes {
-    var out_buf: [PemDecoder.max_key_size]u8 = undefined;
-    const d = try PemDecoder.decode(&out_buf, data);
-
-    const privat_key_auth_magic = "openssh-key-v1\x00";
-    if (!mem.eql(u8, d[0..privat_key_auth_magic.len], privat_key_auth_magic)) {
-        return error.InvalidSSHIdentity;
-    }
-
-    const remainder = d[privat_key_auth_magic.len..];
-    const enc_pk = try parseIntoStruct(EncryptedPrivateKeySpec, remainder);
-    if (enc_pk.keys != 1) {
-        return error.InvalidKeyCount;
-    }
-
-    // TODO: decrypt the private key if needed
-
-    const pk1 = try parseIntoStruct(SshPrivateKeySpec, enc_pk.private_key);
-    if (pk1.check1 != pk1.check2) {
-        return error.InvalidSSHKey;
-    }
-
-    if (mem.eql(u8, pk1.key_type, "ssh-ed25519")) {
-        const k = try parseIntoStruct(SshEd25519PrivateKey, pk1.rest_key_data);
-        const secret_key = try Ed25519.SecretKey.fromBytes(k.private_key[0..64].*);
-        const key_pair = try Ed25519.KeyPair.fromSecretKey(secret_key);
-        return .{ .ed25519 = key_pair };
-    }
-
-    return .unsupported;
-}
-
-fn parseIntoStruct(T: type, data: []u8) !T {
-    var d = data;
-    var out: T = undefined;
-    const fields = @typeInfo(T).@"struct".fields;
-    inline for (fields) |field| {
-        switch (field.type) {
-            u32 => {
-                const size = @sizeOf(u32);
-                @field(out, field.name) = mem.readInt(u32, d[0..size], .big);
-                d = d[size..];
-            },
-            []u8 => {
-                if (mem.eql(u8, field.name[0..4], "rest")) {
-                    @field(out, field.name) = d[0..];
-                    d = d[d.len..];
-                } else {
-                    const size: u32 = mem.readInt(u32, d[0..@sizeOf(u32)], .big);
-                    d = d[@sizeOf(u32)..];
-                    @field(out, field.name) = d[0..size];
-                    d = d[size..];
-                }
-            },
-            ?[]u8 => {
-                const size: u32 = mem.readInt(u32, d[0..@sizeOf(u32)], .big);
-                d = d[@sizeOf(u32)..];
-                if (size == 0) {
-                    @field(out, field.name) = null;
-                } else {
-                    @field(out, field.name) = d[0..size];
-                    d = d[size..];
-                }
-            },
-            else => unreachable,
-        }
-    }
-    return out;
-}
-
-pub const PemDecoder = struct {
-    pub const header = "-----BEGIN";
-    pub const footer = "-----END";
-    pub const max_key_size: usize = 1 << 14; // 16KiB
-    pub const max_openssh_line_length: usize = 70 + 1; // 70 bytes + newline
-
-    const Type = enum {
-        rsaPublicKey,
-        rsaPrivateKey,
-        ed25519PublicKey,
-        ed25519PrivateKey,
-    };
-
-    pub fn decode(dest: []u8, source: []const u8) ![]u8 {
-        var source_fbs = std.io.fixedBufferStream(source);
-        var reader = source_fbs.reader();
-        var buf: [max_key_size]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        var writer = fbs.writer();
-        var line_buf: [max_openssh_line_length]u8 = undefined;
-        while (true) {
-            var line_fbs = std.io.fixedBufferStream(&line_buf);
-            const line_writer = line_fbs.writer();
-            reader.streamUntilDelimiter(line_writer, '\n', line_buf.len) catch |err| switch (err) {
-                error.EndOfStream => break,
-                else => return err,
-            };
-            const line = line_fbs.getWritten();
-            if (line.len == 0) break;
-            if (mem.eql(u8, line[0..header.len], header)) {
-                //TODO: parse header for keytype
-                continue;
-            }
-            if (mem.eql(u8, line[0..footer.len], footer)) {
-                continue;
-            }
-            _ = try writer.write(line);
-        }
-        const bytes = fbs.getWritten();
-        const Decoder = std.base64.standard.Decoder;
-        const size = try Decoder.calcSizeForSlice(bytes);
-        Decoder.decode(dest[0..size], bytes) catch {
-            return error.InvalidSSHIdentity;
-        };
-        return dest[0..size];
-    }
-};
-
-
-fn ed25519SshFormat(out: []u8, key: []const u8) !void {
-    var fbs = std.io.fixedBufferStream(out);
-    const writer = fbs.writer();
-    _ = try writer.write(&[_]u8{0x00, 0x00, 0x00, 0x0b});
-    _ = try writer.write("ssh-ed25519");
-    _ = try writer.write(&[_]u8{0x00, 0x00, 0x00, 0x20});
-    _ = try writer.write(key);
-}

@@ -84,10 +84,10 @@ pub fn unwrap(allocator: Allocator, passphrase: []const u8, args: [][]u8, body: 
 
     const payload = file_key_enc[0..tag_start];
     const file_key: Key = .{
-        .k = try allocator.alloc(u8, payload.len),
+        .slice = .{ .k = try allocator.alloc(u8, payload.len) }
     };
 
-    try ChaCha20Poly1305.decrypt(file_key.k, payload, tag, &ad, nonce, key);
+    try ChaCha20Poly1305.decrypt(file_key.slice.k, payload, tag, &ad, nonce, key);
 
     return file_key;
 }
@@ -138,7 +138,7 @@ pub fn wrap(allocator: Allocator, file_key: Key, passphrase: []const u8) !Recipi
         .{.r=rounds, .p=parallization, .ln=work_factor}
     );
 
-    ChaCha20Poly1305.encrypt(file_key_enc[0..16], &tag, file_key.key(), &ad, nonce, key);
+    ChaCha20Poly1305.encrypt(file_key_enc[0..16], &tag, file_key.key().bytes, &ad, nonce, key);
 
     @memcpy(file_key_enc[16..], &tag);
 
