@@ -140,27 +140,46 @@ pub const SecretKey = struct {
         return (self.n.bits() + 7) / 8;
     }
 
+    fn select(v: usize, x: usize, y: usize) usize { return ~(v-%1)&x | (v-%1)&y; }
+
     pub fn decryptOAEP(self: *const SecretKey, m: []u8, c: []const u8, label: []const u8) !void {
+        const hash_length = Sha256.digest_length;
         var bytes: [4096]u8 = undefined;
         const n = try self.decrypt(&bytes, c);
         const _m = bytes[bytes.len-n..];
 
-        var lbuf: [Sha256.digest_length]u8 = undefined;
+        var lbuf: [hash_length]u8 = undefined;
         Sha256.hash(label, &lbuf, .{});
 
         const first_bytes = _m[0..1].*;
-        if (!ts.eql([1]u8, first_bytes, [_]u8{0})) return error.InvalidSshKey;
+        const first_byte_check = @intFromBool(ts.eql([1]u8, first_bytes, [_]u8{0}));
 
-        const seed = _m[1..1+Sha256.digest_length];
-        const db = _m[1+Sha256.digest_length..];
+        const seed = _m[1..1+hash_length];
+        const db = _m[1+hash_length..];
 
         mgf1Xor(seed, db);
         mgf1Xor(db, seed);
 
-        const l2 = db[0..Sha256.digest_length].*;
-        if (!ts.eql([Sha256.digest_length]u8, lbuf, l2)) return error.InvalidSshKey;
+        const l2 = db[0..hash_length].*;
+        const hash_check = @intFromBool(ts.eql([hash_length]u8, lbuf, l2));
 
-        @memcpy(m, db[db.len-16..]);
+        const out = db[hash_length..];
+        var index: usize = ~@as(usize, 0);
+        var looking: usize = 1;
+        var invalid: usize = 0;
+        for (out, 0..) |b, i| {
+            const zero = @intFromBool(ts.eql([1]u8, [_]u8{b}, [_]u8{0}));
+            const one = @intFromBool(ts.eql([1]u8, [_]u8{b}, [_]u8{1}));
+            index = select(looking&one, i, index);
+            looking &= ~one;
+            invalid |= looking & ~zero;
+        }
+
+        if (first_byte_check&hash_check&~invalid&~looking != 1) {
+            return error.InvalidOaepPadding;
+        }
+
+        @memcpy(m, out[index+1..]);
     }
 
     pub fn decrypt(self: *const SecretKey, m: []u8, c: []const u8) !usize {
@@ -197,8 +216,8 @@ pub const SecretKey = struct {
     fn mgf1Xor(dst: []u8, seed: []u8) void {
         var counter: u32 = 0;
         var i: usize = 0;
+        var c = [_]u8{0} ** 4;
         while (i < dst.len) {
-            var c = [_]u8{0} ** 4;
             mem.writeInt(u32, &c, counter, .big);
 
             var sha256 = Sha256.init(.{});
@@ -214,4 +233,10 @@ pub const SecretKey = struct {
             counter += 1;
         }
     }
+};
+
+const RsaErrors = error{
+    InvalidRsaKey,
+    InvalidOaepPadding,
+    Overflow,
 };

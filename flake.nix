@@ -6,7 +6,6 @@
     flake-utils.url  = "github:numtide/flake-utils";
     treefmt-nix.url = "github:numtide/treefmt-nix";
     zig.url = "github:mitchellh/zig-overlay";
-    zls.url = "github:zigtools/zls";
   };
 
   outputs = { nixpkgs, zig, flake-utils, ... }:

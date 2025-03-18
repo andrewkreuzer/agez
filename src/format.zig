@@ -120,9 +120,7 @@ pub fn AgeReader(
 
                 /// Reads lines of the file,
                 /// keeping track of the line number and header.
-                fn next(iter: *Iter, done: bool) ?Line {
-                    if (done) return .{ .prefix =.end, .bytes = &[_]u8{} };
-
+                fn next(iter: *Iter) ?Line {
                     var fbs = io.fixedBufferStream(&iter.buf);
                     var r = iter.r;
                     const w = fbs.writer();
@@ -206,15 +204,13 @@ pub fn AgeReader(
             var iter: Iter = .{ .r = self.r };
             var age = Age.init(self.allocator);
 
-            var done = false;
-            while (iter.next(done)) |line| {
-                switch (line.prefix) {
+            while (iter.next()) |line| {
+                line: switch (line.prefix) {
                     .armor_begin => {
                         self.armored_reader = ArmoredReaderType{ .r = self.r.normal };
                         const areader = self.armored_reader.reader();
                         self.r = .{ .armored = areader };
                         iter.r = self.r;
-
                     },
                     .version => age.version = Version.fromStr(line.bytes),
                     .stanza => {
@@ -262,7 +258,7 @@ pub fn AgeReader(
                     .hmac => {
                         const start = Prefix.hmac_prefix.len + 1; // space
                         age.mac = try self.allocator.dupe(u8, line.bytes[start..]);
-                        done = true; // ugh
+                        continue :line .end;
                     },
                     .end => {
                         const header_len = iter.read - age.mac.?.len - 2; // space
@@ -558,11 +554,11 @@ test "iterator" {
         .r = .{ .normal = fbs.reader() },
     };
 
-    try t.expectEqualStrings("age-encryption.org/v1", (iter.next(false)).?.bytes);
-    try t.expectEqualStrings("-> X25519 TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc", (iter.next(false)).?.bytes);
-    try t.expectEqualStrings("EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U", (iter.next(false)).?.bytes);
-    try t.expectEqualStrings("--- Vn+54jqiiUCE+WZcEVY3f1sqHjlu/z1LCQ/T7Xm7qI0", (iter.next(false)).?.bytes);
-    try t.expect(iter.next(false).?.bytes.len == 0);
+    try t.expectEqualStrings("age-encryption.org/v1", (iter.next()).?.bytes);
+    try t.expectEqualStrings("-> X25519 TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc", (iter.next()).?.bytes);
+    try t.expectEqualStrings("EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U", (iter.next()).?.bytes);
+    try t.expectEqualStrings("--- Vn+54jqiiUCE+WZcEVY3f1sqHjlu/z1LCQ/T7Xm7qI0", (iter.next()).?.bytes);
+    try t.expect(iter.next().?.bytes.len == 0);
 }
 
 test "invalid" {
