@@ -32,6 +32,7 @@ pub const Key = union(KeyType) {
     pub fn init(allocator: Allocator, T: anytype) !Key {
         switch (@TypeOf(T)) {
             comptime_int, usize => return .{ .slice = .{ .k = try allocator.alloc(u8, T) }},
+            [32]u8 => return .{ .slice = .{ .k = try allocator.dupe(u8, &T) }},
             []u8 => return .{ .slice = .{ .k = try allocator.dupe(u8, T) }},
             Ed25519.KeyPair => {
                 const kp = try allocator.create(Ed25519.KeyPair);

@@ -131,6 +131,15 @@ pub fn ed25519SshFormat(out: []u8, key: []const u8) !void {
     _ = try writer.write(key);
 }
 
+pub fn rsaSshFormat(out: []u8, public_key: Rsa.PublicKey) !void {
+    @memcpy(out[0..4], &[_]u8{0x00, 0x00, 0x00, 0x07});
+    @memcpy(out[4..11], "ssh-rsa");
+    @memcpy(out[11..15], &[_]u8{0x00, 0x00, 0x00, 0x03});
+    try public_key.e.toBytes(out[15..18], .big);
+    mem.writeInt(u32, out[18..22], public_key.size() + 1, .big);
+    try public_key.n.toBytes(out[22..], .big);
+}
+
 const OpenSshErrors = error{
     InvalidSshKey,
     InvalidKeyCount,

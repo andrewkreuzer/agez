@@ -88,13 +88,12 @@ pub const Recipient = struct {
     /// Encrypts the file key in the recipients body
     /// and populates the recipients type, args, and body
     /// caller is responsible for deinit on the reciepient
-    pub fn wrap(self: *Self, allocator: Allocator, file_key: Key, key: []const u8) !void {
+    pub fn wrap(self: *Self, allocator: Allocator, file_key: Key, key: Key) !void {
         var new_recipient = switch (self.type) {
             .X25519 => try X25519.wrap(allocator, file_key, key),
             .scrypt => try scrypt.wrap(allocator, file_key, key),
             .@"ssh-ed25519" => try ssh.ed25519.wrap(allocator, file_key, key),
-            .rsa => unreachable,
-            // .rsa => try ssh.rsaWrap(allocator, file_key, key),
+            .rsa => try ssh.rsa.wrap(allocator, file_key, key.rsa.public_key),
         };
         new_recipient.state = .wrapped;
         std.mem.swap(Self, self, &new_recipient);

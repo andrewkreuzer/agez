@@ -3,9 +3,10 @@ const mem = std.mem;
 const ts = std.crypto.timing_safe;
 const math = std.math;
 const ff = std.crypto.ff;
+const os = std.os;
 
 const max_bits: u32 = 4096;
-const MaxPrim = u4096;
+const MaxPrim = u5120; // TODO: to big
 const Uint = ff.Uint(max_bits);
 const Modulus = ff.Modulus(max_bits);
 const Fe = Modulus.Fe;
@@ -31,7 +32,7 @@ pub const KeyPair = struct {
 
 pub const PublicKey = struct {
     n: Modulus,
-    e: Uint,
+    e: Fe,
 
     pub fn fromParts(n: []u8, e: []u8) !PublicKey {
         const _n = try Modulus.fromBytes(n, .big);
@@ -41,19 +42,52 @@ pub const PublicKey = struct {
         };
     }
 
+    pub fn encryptOaep(self: *const PublicKey, c: []u8, m: []const u8, label: []const u8) !usize {
+        const hash_length = Sha256.digest_length;
+
+        var l: [hash_length]u8 = undefined;
+        Sha256.hash(label, &l, .{});
+
+        std.crypto.utils.secureZero(u8, c);
+        var payload = c[1..];
+        const seed = payload[0..hash_length];
+        var db = payload[hash_length..];
+
+        _ = std.os.linux.getrandom(
+            seed,
+            seed.len,
+            0x0002 // GRND_RANDOM
+        );
+
+        @memcpy(db[0..hash_length], &l);
+        db[db.len-m.len-1] = 0x01;
+        @memcpy(db[db.len-m.len..], m);
+
+        mgf1Xor(db, seed);
+        mgf1Xor(seed, db);
+
+        _ = try self.encrypt(c, payload);
+
+        return (self.n.bits() + 7) / 8;
+    }
+
+
     pub fn encrypt(self: *const PublicKey, c: []u8, m: []const u8) !usize {
         const _m_uint = try Fe.fromBytes(self.n, m, .big);
-        const e = self.n.reduce(self.e);
-        const _m = try self.n.pow(_m_uint, e);
+        const _m = try self.n.pow(_m_uint, self.e);
         try _m.toBytes(c, .big);
         return (self.n.bits() + 7) / 8;
+    }
+
+    pub fn size(self: *const PublicKey) u32 {
+        return @intCast(@divExact(self.n.bits(), 8));
     }
 };
 
 pub const SecretKey = struct {
     n: Modulus,
-    e: Uint,
-    d: Uint,
+    e: Fe,
+    d: Fe,
     p: Fe,
     q: Fe,
     dp: ?Fe = null,
@@ -70,10 +104,17 @@ pub const SecretKey = struct {
         const _n = try Modulus.fromBytes(n, .big);
         return .{
             .n = _n,
-            .e = try Uint.fromBytes(e, .big),
-            .d = try Uint.fromBytes(d, .big),
+            .e = try Fe.fromBytes(_n, e, .big),
+            .d = try Fe.fromBytes(_n, d, .big),
             .p = try Fe.fromBytes(_n, p, .big),
             .q = try Fe.fromBytes(_n, q, .big),
+        };
+    }
+
+    pub fn publicKey(self: *const SecretKey) PublicKey {
+        return .{
+            .n = self.n,
+            .e = self.e,
         };
     }
 
@@ -82,6 +123,7 @@ pub const SecretKey = struct {
         if (!self.n.mul(self.p, self.q).eql(self.n.zero)) {
             return false;
         }
+        // TOOD: bytes please
         const de, const overflow = @mulWithOverflow(
             try self.d.toPrimitive(MaxPrim),
             try self.e.toPrimitive(MaxPrim),
@@ -112,8 +154,8 @@ pub const SecretKey = struct {
         var q_m1_mod = try Modulus.fromUint(self.q.v);
         _ = q_m1_mod.v.subWithOverflow(q_m1_mod.one().v);
 
-        const dp = p_m1_mod.reduce(self.d);
-        const dq = q_m1_mod.reduce(self.d);
+        const dp = p_m1_mod.reduce(self.d.v);
+        const dq = q_m1_mod.reduce(self.d.v);
 
         // use fermat's little theorem to calculate qinv
         // inspired by golang's implementation
@@ -132,24 +174,28 @@ pub const SecretKey = struct {
         self.qinv = qinv;
     }
 
+    pub fn encryptOaep(self: *const SecretKey, c: []u8, m: []const u8, label: []const u8) !usize {
+        const pk = self.publicKey();
+        pk.encryptOaep(c, m, label);
+    }
+
     pub fn encrypt(self: *const SecretKey, c: []u8, m: []u8) !usize {
         const _m_uint = try Fe.fromBytes(self.n, m, .big);
-        const e = self.n.reduce(self.e);
-        const _m = try self.n.pow(_m_uint, e);
+        const _m = try self.n.pow(_m_uint, self.e);
         try _m.toBytes(c, .big);
         return (self.n.bits() + 7) / 8;
     }
 
     fn select(v: usize, x: usize, y: usize) usize { return ~(v-%1)&x | (v-%1)&y; }
 
-    pub fn decryptOAEP(self: *const SecretKey, m: []u8, c: []const u8, label: []const u8) !void {
+    pub fn decryptOaep(self: *const SecretKey, m: []u8, c: []const u8, label: []const u8) !void {
         const hash_length = Sha256.digest_length;
         var bytes: [4096]u8 = undefined;
         const n = try self.decrypt(&bytes, c);
         const _m = bytes[bytes.len-n..];
 
-        var lbuf: [hash_length]u8 = undefined;
-        Sha256.hash(label, &lbuf, .{});
+        var l1: [hash_length]u8 = undefined;
+        Sha256.hash(label, &l1, .{});
 
         const first_bytes = _m[0..1].*;
         const first_byte_check = @intFromBool(ts.eql([1]u8, first_bytes, [_]u8{0}));
@@ -161,7 +207,7 @@ pub const SecretKey = struct {
         mgf1Xor(db, seed);
 
         const l2 = db[0..hash_length].*;
-        const hash_check = @intFromBool(ts.eql([hash_length]u8, lbuf, l2));
+        const hash_check = @intFromBool(ts.eql([hash_length]u8, l1, l2));
 
         const out = db[hash_length..];
         var index: usize = ~@as(usize, 0);
@@ -209,31 +255,31 @@ pub const SecretKey = struct {
         return (self.n.bits() + 7) / 8;
     }
 
-    pub fn size(self: *const SecretKey) usize {
-        return self.n.bits();
-    }
-
-    fn mgf1Xor(dst: []u8, seed: []u8) void {
-        var counter: u32 = 0;
-        var i: usize = 0;
-        var c = [_]u8{0} ** 4;
-        while (i < dst.len) {
-            mem.writeInt(u32, &c, counter, .big);
-
-            var sha256 = Sha256.init(.{});
-            sha256.update(seed);
-            sha256.update(&c);
-            const digest = sha256.finalResult();
-
-            const remaining = @min(digest.len, dst.len - i);
-            for (digest[0..remaining]) |b| {
-                dst[i] ^= b;
-                i += 1;
-            }
-            counter += 1;
-        }
+    pub fn size(self: *const SecretKey) u32 {
+        return @intCast(@divExact(self.n.bits(), 8) + 7);
     }
 };
+
+fn mgf1Xor(dst: []u8, seed: []u8) void {
+    var counter: u32 = 0;
+    var i: usize = 0;
+    var c = [_]u8{0} ** 4;
+    while (i < dst.len) {
+        mem.writeInt(u32, &c, counter, .big);
+
+        var sha256 = Sha256.init(.{});
+        sha256.update(seed);
+        sha256.update(&c);
+        const digest = sha256.finalResult();
+
+        const remaining = @min(digest.len, dst.len - i);
+        for (digest[0..remaining]) |b| {
+            dst[i] ^= b;
+            i += 1;
+        }
+        counter += 1;
+    }
+}
 
 const RsaErrors = error{
     InvalidRsaKey,

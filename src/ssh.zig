@@ -7,12 +7,15 @@ const X25519 = std.crypto.dh.X25519;
 const Sha512 = std.crypto.hash.sha2.Sha512;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
 
 const Key = @import("key.zig").Key;
 const Rsa = @import("ssh/rsa.zig");
 const Recipient = @import("recipient.zig").Recipient;
 const Parser = @import("ssh/lib.zig").Parser;
-const PemDecoder = @import("ssh/lib.zig").PemDecoder;
+const ssh = @import("ssh/lib.zig");
+const PemDecoder = ssh.PemDecoder;
+const PemEncoder = ssh.PemEncoder;
 
 pub const ed25519_stanza_arg = "ssh-ed25519";
 pub const rsa_stanza_arg = "ssh-rsa";
@@ -21,22 +24,19 @@ const rsa_key_label = "age-encryption.org/v1/ssh-rsa";
 
 pub const rsa = struct {
     pub fn toStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
-        var buf: [109]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
+        const buf: []u8 = try allocator.alloc(u8, 12 + args[0].len + body.len);
+        var fbs = std.io.fixedBufferStream(buf);
         const writer = fbs.writer();
         try std.fmt.format(
             writer,
-        \\-> ssh-rsa {s} {s}
+        \\-> ssh-rsa {s}
         \\{s}
-        ,.{args[0], args[1], body}
+        ,.{args[0], body}
         );
-        return try allocator.dupe(u8, &buf);
+        return buf;
     }
 
     pub fn fromPublicKey(allocator: Allocator, pk: Rsa.PublicKey, file_key: Key) !Recipient {
-        // var r = Recipient{ .type = .rsa };
-        // try r.wrap(allocator, file_key, pk);
-        // return r;
         return wrap(allocator, file_key, pk);
     }
 
@@ -50,18 +50,54 @@ pub const rsa = struct {
         const file_key: Key = .{
             .slice = .{ .k = try allocator.alloc(u8, 16) }
         };
-        try private_key.decryptOAEP(file_key.slice.k, b, rsa_key_label);
+        try private_key.decryptOaep(file_key.slice.k, b, rsa_key_label);
 
         return file_key;
     }
 
     pub fn wrap(allocator: Allocator, file_key: Key, public_key: Rsa.PublicKey) !Recipient {
-        _ = allocator;
-        _ = public_key;
-        _ = file_key;
-        var r = Recipient{ .type = .rsa };
-        _ = &r;
-        return r;
+        const Encoder = std.base64.standard_no_pad.Encoder;
+
+        var buf: []u8 = try allocator.alloc(u8, public_key.size());
+        const n = try public_key.encryptOaep(buf, file_key.key().bytes, rsa_key_label);
+        const encoded_buf: []u8 = try allocator.alloc(u8, Encoder.calcSize(n));
+        defer allocator.free(encoded_buf);
+        const encoded = Encoder.encode(encoded_buf, buf[0..n]);
+
+        var body = ArrayList([]const u8).init(allocator);
+        var iter = std.mem.window(u8, encoded, 64, 64);
+        while (true) {
+            const line = iter.next();
+            if (line == null) break;
+            try body.append(line.?);
+        }
+        const b = try std.mem.join(allocator, "\n", try body.toOwnedSlice());
+
+        const size_of_e = 3;
+        const size = @sizeOf(u32) + public_key.size() + size_of_e + 16;
+        const ssh_key = try allocator.alloc(u8, size);
+
+        var pk = public_key;
+        var i = pk.e.v.limbs_len - 1;
+        while (i > 0 and pk.e.v.limbs_buffer[i] == 0) : (i -= 1) {}
+        pk.e.v.limbs_len = i + 1;
+        std.debug.assert(pk.e.v.limbs_len <= pk.e.v.limbs_buffer.len);
+
+        try Parser.rsaSshFormat(ssh_key, pk);
+
+        var ssh_key_hash: [Sha256.digest_length]u8 = undefined;
+        Sha256.hash(ssh_key, &ssh_key_hash, .{});
+
+        var ssh_tag_b64: [6]u8 = undefined;
+        _ = Encoder.encode(&ssh_tag_b64, ssh_key_hash[0..4]);
+        var args = try allocator.alloc([]u8, 1);
+        args[0] = try allocator.dupe(u8, &ssh_tag_b64);
+
+        return .{
+            .type = .rsa,
+            .args = args,
+            .body = b,
+        };
     }
 };
 
@@ -83,7 +119,8 @@ pub const ed25519 = struct {
 
     pub fn fromPublicKey(allocator: Allocator, pk: []const u8, file_key: Key) !Recipient {
         var r = Recipient{ .type = .@"ssh-ed25519" };
-        try r.wrap(allocator, file_key, pk);
+        const key = try Key.init(allocator, pk);
+        try r.wrap(allocator, file_key, key);
         return r;
     }
 
@@ -189,7 +226,7 @@ pub const ed25519 = struct {
     /// Encrypts the file key in the recipients body
     /// and populates the recipients type, args, and body
     /// caller is responsible for deinit on the reciepient
-    pub fn wrap(allocator: Allocator, file_key: Key, public_key: []const u8) !Recipient {
+    pub fn wrap(allocator: Allocator, file_key: Key, public_key: Key) !Recipient {
         // derived from the shared secret and salt
         // encrypts the file key in the recipients body
         var key: [32]u8 = undefined;
@@ -240,14 +277,15 @@ pub const ed25519 = struct {
             0x0002 // GRND_RANDOM
         );
 
+        const pk = public_key.key().bytes;
         const epk = try X25519.recoverPublicKey(ephemeral_secret);
         const rpk = blk: {
-            const rpk_ed = try std.crypto.ecc.Edwards25519.fromBytes(public_key[0..32].*);
+            const rpk_ed = try std.crypto.ecc.Edwards25519.fromBytes(pk[0..32].*);
             const rpk_x = try X25519.Curve.fromEdwards25519(rpk_ed);
             break :blk rpk_x.toBytes();
         };
 
-        try Parser.ed25519SshFormat(&pk_ssh, public_key);
+        try Parser.ed25519SshFormat(&pk_ssh, pk);
         Sha256.hash(&pk_ssh, &pk_tag, .{});
 
         var shared_secret = blk: {

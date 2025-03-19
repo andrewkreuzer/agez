@@ -33,11 +33,13 @@ pub fn fromPublicKey(allocator: Allocator, s: []const u8, file_key: Key) !Recipi
     var recipient_buf: [90]u8 = undefined;
     const decoded = try bech32.decode(&recipient_buf, bech32_hrp_public, s);
 
-    var public_key: [32]u8 = undefined;
-    _ = try bech32.convertBits(&public_key, decoded.data, 5, 8, false);
+    const public_key: Key = .{
+        .slice = .{ .k = try allocator.alloc(u8, 32) }
+    };
+    _ = try bech32.convertBits(public_key.slice.k, decoded.data, 5, 8, false);
 
     var recipient = Recipient{ .type = .X25519 };
-    try recipient.wrap(allocator, file_key, &public_key);
+    try recipient.wrap(allocator, file_key, public_key);
     return recipient;
 }
 
@@ -49,10 +51,11 @@ pub fn fromPrivateKey(allocator: Allocator, s: []const u8, file_key: Key) !Recip
 
     const decoded = try bech32.decode(&recipient_buf, bech32_hrp_private, s);
     _ = try bech32.convertBits(&secret_key, decoded.data, 5, 8, false);
-    var public_key = try std.crypto.dh.X25519.recoverPublicKey(secret_key);
+    const pk = try X25519.recoverPublicKey(secret_key);
+    const public_key: Key = try Key.init(allocator, pk);
 
     var r = Recipient{ .type = .X25519 };
-    try r.wrap(allocator, file_key, &public_key);
+    try r.wrap(allocator, file_key, public_key);
     return r;
 }
 
@@ -135,7 +138,7 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
 /// Encrypts the file key in the recipients body
 /// and populates the recipients type, args, and body
 /// caller is responsible for deinit on the reciepient
-pub fn wrap(allocator: Allocator, file_key: Key, public_key: []const u8) !Recipient {
+pub fn wrap(allocator: Allocator, file_key: Key, public_key: Key) !Recipient {
     // derived from the shared secret and salt
     // encrypts the file key in the recipients body
     var key: [32]u8 = undefined;
@@ -177,12 +180,14 @@ pub fn wrap(allocator: Allocator, file_key: Key, public_key: []const u8) !Recipi
         0x0002 // GRND_RANDOM
     );
 
+    const pk = public_key.key().bytes;
+
     const ephemeral_share = try X25519.recoverPublicKey(ephemeral_secret);
-    var shared_secret = try X25519.scalarmult(ephemeral_secret, public_key[0..32].*);
+    var shared_secret = try X25519.scalarmult(ephemeral_secret, pk[0..32].*);
     defer std.crypto.utils.secureZero(u8, &shared_secret);
 
     @memcpy(salt[0..32], &ephemeral_share);
-    @memcpy(salt[32..], public_key);
+    @memcpy(salt[32..], pk);
 
     const k = hkdf.extract(&salt, &shared_secret);
     hkdf.expand(&key, key_label, k);
