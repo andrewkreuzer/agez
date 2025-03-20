@@ -1,14 +1,13 @@
 const std = @import("std");
 const mem = std.mem;
-
-const ArrayList = std.ArrayList;
-const Allocator = std.mem.Allocator;
 const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 const hkdf = std.crypto.kdf.hkdf.HkdfSha256;
+const ArrayList = std.ArrayList;
+const Allocator = std.mem.Allocator;
 
+const generate_hmac = @import("format.zig").generate_hmac;
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
-const generate_hmac = @import("format.zig").generate_hmac;
 
 pub const Age = struct {
     version: ?Version = null,

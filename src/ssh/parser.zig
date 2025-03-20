@@ -2,8 +2,8 @@ const std = @import("std");
 const mem = std.mem;
 const Ed25519 = std.crypto.sign.Ed25519;
 
-const Key = @import("../key.zig").Key;
 const Rsa = @import("rsa.zig");
+const Key = @import("../key.zig").Key;
 const PemDecoder = @import("lib.zig").PemDecoder;
 
 const EncryptedPrivateKeySpec = struct {

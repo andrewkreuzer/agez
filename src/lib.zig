@@ -5,18 +5,18 @@ const File = std.fs.File;
 
 pub const bech32 = @import("bech32.zig");
 pub const cli = @import("cli.zig");
+pub const X25519 = @import("X25519.zig");
+pub const ssh = @import("ssh/lib.zig");
 pub const Io = @import("io.zig");
 pub const Key = @import("key.zig").Key;
 pub const Recipient = @import("recipient.zig").Recipient;
-pub const X25519 = @import("X25519.zig");
-pub const ssh = @import("ssh/lib.zig");
 
 const armor = @import("armor.zig");
 const format = @import("format.zig");
 const _age = @import("age.zig");
-const Age = _age.Age;
 const ageEncrypt = _age.ageEncrypt;
 const ageDecrypt = _age.ageDecrypt;
+const Age = _age.Age;
 const AgeReader = format.AgeReader;
 const AgeWriter = format.AgeWriter;
 const Args = cli.Args;

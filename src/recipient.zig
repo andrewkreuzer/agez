@@ -1,5 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const io = std.io;
 const Allocator = std.mem.Allocator;
 
 const Key = @import("key.zig").Key;
@@ -115,58 +116,159 @@ const RecipientErrors = error{
     FromKeyNotSupported,
 };
 
-test "unwrap" {
+test "X25519 recipient" {
     const t = std.testing;
     const allocator = std.testing.allocator;
+    const mem = std.mem;
+    const bech32 = @import("bech32.zig");
 
+    const test_file_key = "YELLOW SUBMARINE";
     var recipient: Recipient = .{
         .type = .X25519,
         .args = try allocator.alloc([]u8, 1),
         .body = try allocator.dupe(u8, "EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U"),
     };
     recipient.args.?[0] = try allocator.dupe(u8, "TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc");
-    defer recipient.deinit(allocator);
 
     var identity = "AGE-SECRET-KEY-1XMWWC06LY3EE5RYTXM9MFLAZ2U56JJJ36S0MYPDRWSVLUL66MV4QX3S7F6".*;
     const id: Key = .{ .slice = .{ .k = &identity } };
     var file_key = try recipient.unwrap(allocator, id);
-    defer file_key.deinit(allocator);
-
-    try t.expect(recipient.state == .unwrapped);
-    try t.expectEqualSlices(u8, file_key.key().bytes, "YELLOW SUBMARINE");
-}
-
-test "wrap" {
-    const t = std.testing;
-    const mem = std.mem;
-    const allocator = std.testing.allocator;
-    const bech32 = @import("bech32.zig");
-
-    var recipient: Recipient = .{
-        .type = .X25519,
-        .args = try allocator.alloc([]u8, 1),
-        .body = try allocator.dupe(u8, "EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U"),
-    };
-    recipient.args.?[0] = try allocator.dupe(u8, "TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc");
-
-    defer recipient.deinit(allocator);
-
-    var file_key: Key = .{ .slice = .{ .k = try allocator.dupe(u8, "YELLOW SUBMARINE") } };
-    defer file_key.deinit(allocator);
-
-    const identity = "AGE-SECRET-KEY-1XMWWC06LY3EE5RYTXM9MFLAZ2U56JJJ36S0MYPDRWSVLUL66MV4QX3S7F6";
     var identity_buf: [X25519.bech32_max_len]u8 = undefined;
-    const Bech32 = try bech32.decode(&identity_buf, X25519.bech32_hrp_private, identity);
+    const Bech32 = try bech32.decode(&identity_buf, X25519.bech32_hrp_private, &identity);
     var x25519_secret_key: [32]u8 = undefined;
     _ = try bech32.convertBits(&x25519_secret_key, Bech32.data, 5, 8, false);
     const public_key: [32]u8 = try std.crypto.dh.X25519.recoverPublicKey(x25519_secret_key);
 
+    try t.expect(recipient.state == .unwrapped);
+    try t.expectEqualSlices(u8, file_key.key().bytes, test_file_key);
+
     const key = try Key.init(allocator, public_key);
-    defer key.deinit(allocator);
     try recipient.wrap(allocator, file_key, key);
 
     try t.expect(recipient.state == .wrapped);
 
     try t.expect(!mem.eql(u8, recipient.args.?[0], "TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc"));
     try t.expect(!mem.eql(u8, recipient.body.?, "EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U"));
+
+    file_key.deinit(allocator);
+    key.deinit(allocator);
+    recipient.deinit(allocator);
+}
+
+test "scrypt recipient" {
+    const t = std.testing;
+    const allocator = std.testing.allocator;
+
+    const test_file_key = "YELLOW SUBMARINE";
+    var passphrase = "password".*;
+    var recipient: Recipient = .{
+        .type = .scrypt,
+        .args = try allocator.alloc([]u8, 2),
+        .body = try allocator.dupe(u8, "gUjEymFKMVXQEKdMMHL24oYexjE3TIC0O0zGSqJ2aUY"),
+    };
+    recipient.args.?[1] = try allocator.dupe(u8, "rF0/NwblUHHTpgQgRpe5CQ");
+    recipient.args.?[0] = try allocator.dupe(u8, "10");
+
+    const id: Key = .{ .slice = .{ .k = &passphrase } };
+    var file_key = try recipient.unwrap(allocator, id);
+    try t.expect(recipient.state == .unwrapped);
+    try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
+
+    try recipient.wrap(allocator, file_key, id);
+    try t.expect(recipient.state == .wrapped);
+
+    file_key.deinit(allocator);
+    recipient.deinit(allocator);
+}
+
+test "ed25519 recipient" {
+    const SshParser = @import("ssh/lib.zig").Parser;
+    const t = std.testing;
+    const allocator = std.testing.allocator;
+
+    const test_file_key = "YELLOW SUBMARINE";
+    var private_key =
+        \\-----BEGIN OPENSSH PRIVATE KEY-----
+        \\b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+        \\QyNTUxOQAAACDbG0rq7DpgTElpxU1kFWBYUm2vTut2QtLziCXnc3+qVgAAAJitCiUbrQol
+        \\GwAAAAtzc2gtZWQyNTUxOQAAACDbG0rq7DpgTElpxU1kFWBYUm2vTut2QtLziCXnc3+qVg
+        \\AAAEB1ovrGH8VhrZsp5G0UsHDrXjysoYiD4GhnPuIuuoUoidsbSursOmBMSWnFTWQVYFhS
+        \\ba9O63ZC0vOIJedzf6pWAAAAEWFrcmV1emVyQGNhcm5haGFuAQIDBA==
+        \\-----END OPENSSH PRIVATE KEY-----
+        .*
+    ;
+    var recipient: Recipient = .{
+        .type = .@"ssh-ed25519",
+        .args = try allocator.alloc([]u8, 2),
+        .body = try allocator.dupe(u8, "+Iil7T4RMV75FvQKvZD6gkjWsllUrW5SBHHxN2wMruw"),
+    };
+    recipient.args.?[1] = try allocator.dupe(u8, "xk+TSA");
+    recipient.args.?[0] = try allocator.dupe(u8, "xSh4cYHalYztTjXKULvJhGWIEp8gCSIQ/zx13jGzalw");
+
+    const id: Key = try SshParser.parseOpenSshPrivateKey(&private_key);
+    var file_key = try recipient.unwrap(allocator, id);
+
+    try t.expect(recipient.state == .unwrapped);
+
+    try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
+
+    const pk: Key = try Key.init(allocator, id.ed25519.public_key.bytes);
+    try recipient.wrap(allocator, file_key, pk);
+
+    try t.expect(recipient.state == .wrapped);
+
+    file_key.deinit(allocator);
+    pk.deinit(allocator);
+    recipient.deinit(allocator);
+}
+
+test "rsa recipient" {
+    const SshParser = @import("ssh/lib.zig").Parser;
+    const t = std.testing;
+    const allocator = std.testing.allocator;
+
+    const test_file_key = "YELLOW SUBMARINE";
+    var private_key =
+        \\-----BEGIN OPENSSH PRIVATE KEY-----
+        \\b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAlwAAAAdzc2gtcn
+        \\NhAAAAAwEAAQAAAIEAuSa/Sk+MhHf5lv7Las1e83a86RlkPPqd7ttOT4ucZ/bV7oYdbQwo
+        \\KdHVOUQJ8gcl9k0frPXR/qr/CX/dW87t/vy49lsGHsM3b+NQ4TmjkRkSvDJgK4rnM6dSZE
+        \\Hy5UAWlmo1saQnLG06/Ui6/at6F2gaNNlFHSjwvOruKCUnRlUAAAIAWlA1kFpQNZAAAAAH
+        \\c3NoLXJzYQAAAIEAuSa/Sk+MhHf5lv7Las1e83a86RlkPPqd7ttOT4ucZ/bV7oYdbQwoKd
+        \\HVOUQJ8gcl9k0frPXR/qr/CX/dW87t/vy49lsGHsM3b+NQ4TmjkRkSvDJgK4rnM6dSZEHy
+        \\5UAWlmo1saQnLG06/Ui6/at6F2gaNNlFHSjwvOruKCUnRlUAAAADAQABAAAAgFmqzTt02Q
+        \\2SePrKfMNFoLVyDL0rAeOSUAhMh1l4uI+U+DhjFT8pgw31xDjOna5sDdOBuFRwXHnkYE0+
+        \\cnqy9YkTIyqLz+O1WPwJrX8xHY4KnYBAkhsXvJnmhSxJZM/9IJztBLyzwTuI3sRUcJ15S5
+        \\IlI3YKM2fBMkMTa6Sah+clAAAAQQDL+BSk78zrQfel/enOosLombu6LFHDD79TToz+cFBG
+        \\AE8RKtpRDwp9ZGbQ/wjKmETU8F81V+YmJ8ZKdGGVRcBDAAAAQQDuk4nzpOcvy0cCHzphaY
+        \\DDb9RvHCSIENE6JjhiaVNfPKzGJcrEucsGA8q1KYJPqstorMWsPwEORMFygX61fvJfAAAA
+        \\QQDGrF3ac2jIh7WU++00o3lsGm7rqhQUNJ63nHDMgFbo65OIk55PGT5x+yNayRy/Z92gvQ
+        \\KITxCvrdPBzRqxzQvLAAAABGFnZXoBAgMEBQY=
+        \\-----END OPENSSH PRIVATE KEY-----
+        .*
+    ;
+    const id = try SshParser.parseOpenSshPrivateKey(&private_key);
+    var recipient: Recipient = .{
+        .type = .@"ssh-rsa",
+        .args = try allocator.alloc([]u8, 1),
+        .body = try allocator.dupe(u8, 
+            \\AmzFOlub++Nsaxhme3ynSwrSjYZwYIyt91m2+CXZnkOGDMurW8vVyERWQZRQxB5j
+            \\c9KVBe+MhHGt8zMjhytnjepioA4bCJgnxLUKU4u8WzH68TbCFb5wcoiNkTVOejyy
+            \\NGV+DSwX6vBCzxsaswpYFbhG0X6wzYweUqJgvovYW/k
+        ),
+    };
+    recipient.args.?[0] = try allocator.dupe(u8, "UI4tAQ");
+
+    var file_key = try recipient.unwrap(allocator, id);
+
+    try t.expect(recipient.state == .unwrapped);
+
+    try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
+
+    try recipient.wrap(allocator, file_key, id);
+
+    try t.expect(recipient.state == .wrapped);
+
+    file_key.deinit(allocator);
+    recipient.deinit(allocator);
 }
