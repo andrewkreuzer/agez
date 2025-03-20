@@ -110,6 +110,11 @@ pub fn main() !void {
         }
     }
 
+    if (recipients.items.len == 0) {
+        std.debug.print("No recipients specified\n", .{});
+        exit(1);
+    }
+
     if (decrypt) {
         try lib.decrypt(allocator, &io, identities.?);
     } else {

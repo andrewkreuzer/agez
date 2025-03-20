@@ -23,21 +23,19 @@ pub const Recipient = struct {
     };
 
     pub const Type = enum {
-        X25519,
         scrypt,
+        X25519,
+        @"ssh-rsa",
         @"ssh-ed25519",
-        rsa,
 
         pub fn fromStanzaArg(s: []const u8) !@This() {
-            if (std.mem.eql(u8, s, X25519.stanza_arg)) {
-                return .X25519;
-            } else if (std.mem.eql(u8, s, scrypt.stanza_arg)) {
-                return .scrypt;
-            } else if (std.mem.eql(u8, s, ssh.ed25519_stanza_arg)) {
-                return .@"ssh-ed25519";
-            } else if (std.mem.eql(u8, s, ssh.rsa_stanza_arg)) {
-                return .rsa;
-            } else return error.InvalidRecipientType;
+            const fields = @typeInfo(Type).@"enum".fields;
+            inline for (fields) |field| {
+                if (std.mem.eql(u8, s, field.name)) {
+                    return @enumFromInt(field.value);
+                }
+            }
+            return error.InvalidRecipientType;
         }
     };
 
@@ -54,22 +52,22 @@ pub const Recipient = struct {
     }
 
     pub fn fromSshKey(allocator: Allocator, key: Key, file_key: Key) !Self {
-        switch (key) {
-            .ed25519 => |ed25519| return try ssh.ed25519.fromPublicKey(allocator, &ed25519.public_key.bytes, file_key),
-            .rsa => |rsa| return try ssh.rsa.fromPublicKey(allocator, rsa.public_key, file_key),
-            else => return error.FromKeyNotSupported,
-        }
+        return switch (key) {
+            .ed25519 => |ed25519| try ssh.ed25519.fromPublicKey(allocator, &ed25519.public_key.bytes, file_key),
+            .rsa => |rsa| try ssh.rsa.fromPublicKey(allocator, rsa.public_key, file_key),
+            else => error.FromKeyNotSupported,
+        };
     }
 
     /// returns the stanza of a recipient. it's the
     /// callers responsibility to free the memory
     pub fn toStanza(self: *Self, allocator: Allocator) ![]const u8 {
-        switch (self.type) {
-            .X25519 => return try X25519.toStanza(allocator, self.args.?, self.body.?),
-            .scrypt => return try scrypt.toStanza(allocator, self.args.?, self.body.?),
-            .@"ssh-ed25519" => return try ssh.ed25519.toStanza(allocator, self.args.?, self.body.?),
-            .rsa => return try ssh.rsa.toStanza(allocator, self.args.?, self.body.?),
-        }
+        return switch (self.type) {
+            .X25519 => try X25519.toStanza(allocator, self.args.?, self.body.?),
+            .scrypt => try scrypt.toStanza(allocator, self.args.?, self.body.?),
+            .@"ssh-ed25519" => try ssh.ed25519.toStanza(allocator, self.args.?, self.body.?),
+            .@"ssh-rsa" => try ssh.rsa.toStanza(allocator, self.args.?, self.body.?),
+        };
     }
 
     /// Decrypts the file key from the recipients body
@@ -77,12 +75,12 @@ pub const Recipient = struct {
     /// and deallocation of the decrypted file key
     pub fn unwrap(self: *Self, allocator: Allocator, identity: Key) !Key {
         self.state = .unwrapped;
-        switch (self.type) {
-            .X25519 => return try X25519.unwrap(allocator, identity.key().bytes, self.args.?, self.body.?),
-            .scrypt => return try scrypt.unwrap(allocator, identity.key().bytes, self.args.?, self.body.?),
-            .@"ssh-ed25519" => return try ssh.ed25519.unwrap(allocator, identity.key().bytes, self.args.?, self.body.?),
-            .rsa => return try ssh.rsa.unwrap(allocator, identity.key().rsa.private_key, self.args.?, self.body.?),
-        }
+        return switch (self.type) {
+            .X25519 => try X25519.unwrap(allocator, identity.key().bytes, self.args.?, self.body.?),
+            .scrypt => try scrypt.unwrap(allocator, identity.key().bytes, self.args.?, self.body.?),
+            .@"ssh-ed25519" => try ssh.ed25519.unwrap(allocator, identity.key().bytes, self.args.?, self.body.?),
+            .@"ssh-rsa" => try ssh.rsa.unwrap(allocator, identity.key().rsa.private_key, self.args.?, self.body.?),
+        };
     }
 
     /// Encrypts the file key in the recipients body
@@ -93,7 +91,7 @@ pub const Recipient = struct {
             .X25519 => try X25519.wrap(allocator, file_key, key),
             .scrypt => try scrypt.wrap(allocator, file_key, key),
             .@"ssh-ed25519" => try ssh.ed25519.wrap(allocator, file_key, key),
-            .rsa => try ssh.rsa.wrap(allocator, file_key, key.rsa.public_key),
+            .@"ssh-rsa" => try ssh.rsa.wrap(allocator, file_key, key.rsa.public_key),
         };
         new_recipient.state = .wrapped;
         std.mem.swap(Self, self, &new_recipient);
@@ -163,7 +161,9 @@ test "wrap" {
     _ = try bech32.convertBits(&x25519_secret_key, Bech32.data, 5, 8, false);
     const public_key: [32]u8 = try std.crypto.dh.X25519.recoverPublicKey(x25519_secret_key);
 
-    try recipient.wrap(allocator, file_key, &public_key);
+    const key = try Key.init(allocator, public_key);
+    defer key.deinit(allocator);
+    try recipient.wrap(allocator, file_key, key);
 
     try t.expect(recipient.state == .wrapped);
 

@@ -265,9 +265,7 @@ pub fn AgeReader(
                         age.header = try self.allocator.dupe(u8, iter.header[0..header_len]);
                         return age;
                     },
-                    else => {
-                        return error.Unexpected;
-                    }
+                    else => return error.Unexpected,
                 }
             }
             return error.Unexpected;
@@ -456,8 +454,8 @@ test "age file" {
     try t.expect(age.mac.?.len == 43);
 
     try t.expect(age.recipients.items[0].type == .X25519);
-    try t.expect(age.recipients.items[0].args != null);
-    try t.expect(age.recipients.items[0].body != null);
+    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[0], "TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc"));
+    try t.expect(mem.eql(u8, age.recipients.items[0].body.?, "EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U"));
 
     const id: Key = .{ .slice = .{ .k = &identity } };
     var file_key = try age.recipients.items[0].unwrap(allocator, id);
@@ -476,7 +474,9 @@ test "age file" {
     _ = try bech32.convertBits(&x25519_secret_key, Bech32.data, 5, 8, false);
     const public_key: [32]u8 = try X25519.recoverPublicKey(x25519_secret_key);
 
-    try age.recipients.items[0].wrap(allocator, file_key, &public_key);
+    const key = try Key.init(allocator, public_key);
+    defer key.deinit(allocator);
+    try age.recipients.items[0].wrap(allocator, file_key, key);
 
     try t.expect(age.recipients.items[0].state == .wrapped);
 }
@@ -534,7 +534,9 @@ test "armored age file" {
     _ = try bech32.convertBits(&x25519_secret_key, Bech32.data, 5, 8, false);
     const public_key: [32]u8 = try X25519.recoverPublicKey(x25519_secret_key);
 
-    try age.recipients.items[0].wrap(allocator, file_key, &public_key);
+    const key = try Key.init(allocator, public_key);
+    defer key.deinit(allocator);
+    try age.recipients.items[0].wrap(allocator, file_key, key);
 
     try t.expect(age.recipients.items[0].state == .wrapped);
 }
@@ -574,4 +576,178 @@ test "invalid" {
     };
     defer age_reader.deinit();
     try t.expectError(error.InvalidAscii, age_reader.read());
+}
+
+test "scrypt recipient" {
+    const t = std.testing;
+    var fbs = io.fixedBufferStream(
+        \\age-encryption.org/v1
+        \\-> scrypt rF0/NwblUHHTpgQgRpe5CQ 10
+        \\gUjEymFKMVXQEKdMMHL24oYexjE3TIC0O0zGSqJ2aUY
+        \\--- IOXiQYStkoT1mvZW2tFOqZdhRVvj58egABx/sWfZQbc
+        \\
+    );
+    var passphrase = "password".*;
+    const test_file_key = "YELLOW SUBMARINE";
+    const allocator = std.testing.allocator;
+    var age_reader = AgeReader(
+        @TypeOf(fbs.reader()),
+    ){
+        .allocator = allocator,
+        .r = .{ .normal = fbs.reader() },
+    };
+    defer age_reader.deinit();
+
+    var age = try age_reader.read();
+    defer age.deinit(allocator);
+
+    try t.expect(age.version.? == .v1);
+    try t.expect(age.recipients.items.len == 1);
+    try t.expect(age.mac.?.len == 43);
+
+    try t.expect(age.recipients.items[0].type == .scrypt);
+    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[0], "10"));
+    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[1], "rF0/NwblUHHTpgQgRpe5CQ"));
+    try t.expect(mem.eql(u8, age.recipients.items[0].body.?, "gUjEymFKMVXQEKdMMHL24oYexjE3TIC0O0zGSqJ2aUY"));
+
+    const id: Key = .{ .slice = .{ .k = &passphrase } };
+    var file_key = try age.recipients.items[0].unwrap(allocator, id);
+    defer file_key.deinit(allocator);
+
+    try t.expect(age.recipients.items[0].state == .unwrapped);
+
+    try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
+    try t.expect(age.verify_hmac(allocator, &file_key));
+
+    try age.recipients.items[0].wrap(allocator, file_key, id);
+
+    try t.expect(age.recipients.items[0].state == .wrapped);
+}
+
+test "ed25519 recipient" {
+    const SshParser = @import("ssh/lib.zig").Parser;
+    const t = std.testing;
+    var fbs = io.fixedBufferStream(
+        \\age-encryption.org/v1
+        \\-> ssh-ed25519 xk+TSA xSh4cYHalYztTjXKULvJhGWIEp8gCSIQ/zx13jGzalw
+        \\+Iil7T4RMV75FvQKvZD6gkjWsllUrW5SBHHxN2wMruw
+        \\--- NXKZrxXl5+8EmJG1lcx01IeOzm1k7nmlEJbJ6Dbymlg
+        \\
+    );
+    var private_key =
+        \\-----BEGIN OPENSSH PRIVATE KEY-----
+        \\b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+        \\QyNTUxOQAAACDbG0rq7DpgTElpxU1kFWBYUm2vTut2QtLziCXnc3+qVgAAAJitCiUbrQol
+        \\GwAAAAtzc2gtZWQyNTUxOQAAACDbG0rq7DpgTElpxU1kFWBYUm2vTut2QtLziCXnc3+qVg
+        \\AAAEB1ovrGH8VhrZsp5G0UsHDrXjysoYiD4GhnPuIuuoUoidsbSursOmBMSWnFTWQVYFhS
+        \\ba9O63ZC0vOIJedzf6pWAAAAEWFrcmV1emVyQGNhcm5haGFuAQIDBA==
+        \\-----END OPENSSH PRIVATE KEY-----
+        .*
+    ;
+    const id = try SshParser.parseOpenSshPrivateKey(&private_key);
+    const test_file_key = "YELLOW SUBMARINE";
+    const allocator = std.testing.allocator;
+    var age_reader = AgeReader(
+        @TypeOf(fbs.reader()),
+    ){
+        .allocator = allocator,
+        .r = .{ .normal = fbs.reader() },
+    };
+    defer age_reader.deinit();
+
+    var age = try age_reader.read();
+    defer age.deinit(allocator);
+
+    try t.expect(age.version.? == .v1);
+    try t.expect(age.recipients.items.len == 1);
+    try t.expect(age.mac.?.len == 43);
+
+    try t.expect(age.recipients.items[0].type == .@"ssh-ed25519");
+    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[1], "xk+TSA"));
+    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[0], "xSh4cYHalYztTjXKULvJhGWIEp8gCSIQ/zx13jGzalw"));
+    try t.expect(mem.eql(u8, age.recipients.items[0].body.?, "+Iil7T4RMV75FvQKvZD6gkjWsllUrW5SBHHxN2wMruw"));
+
+    var file_key = try age.recipients.items[0].unwrap(allocator, id);
+    defer file_key.deinit(allocator);
+
+    try t.expect(age.recipients.items[0].state == .unwrapped);
+
+    try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
+    try t.expect(age.verify_hmac(allocator, &file_key));
+
+    const pk: Key = try Key.init(allocator, id.ed25519.public_key.bytes);
+    defer pk.deinit(allocator);
+    try age.recipients.items[0].wrap(allocator, file_key, pk);
+
+    try t.expect(age.recipients.items[0].state == .wrapped);
+}
+
+test "rsa recipient" {
+    const SshParser = @import("ssh/lib.zig").Parser;
+    const t = std.testing;
+    var fbs = io.fixedBufferStream(
+        \\age-encryption.org/v1
+        \\-> ssh-rsa UI4tAQ
+        \\AmzFOlub++Nsaxhme3ynSwrSjYZwYIyt91m2+CXZnkOGDMurW8vVyERWQZRQxB5j
+        \\c9KVBe+MhHGt8zMjhytnjepioA4bCJgnxLUKU4u8WzH68TbCFb5wcoiNkTVOejyy
+        \\NGV+DSwX6vBCzxsaswpYFbhG0X6wzYweUqJgvovYW/k
+        \\--- hwblgFvUGLpdna6xzrTwsfq3Y3ztKzeF7a0DaYwXnHA
+        \\
+    );
+    var private_key =
+        \\-----BEGIN OPENSSH PRIVATE KEY-----
+        \\b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAlwAAAAdzc2gtcn
+        \\NhAAAAAwEAAQAAAIEAuSa/Sk+MhHf5lv7Las1e83a86RlkPPqd7ttOT4ucZ/bV7oYdbQwo
+        \\KdHVOUQJ8gcl9k0frPXR/qr/CX/dW87t/vy49lsGHsM3b+NQ4TmjkRkSvDJgK4rnM6dSZE
+        \\Hy5UAWlmo1saQnLG06/Ui6/at6F2gaNNlFHSjwvOruKCUnRlUAAAIAWlA1kFpQNZAAAAAH
+        \\c3NoLXJzYQAAAIEAuSa/Sk+MhHf5lv7Las1e83a86RlkPPqd7ttOT4ucZ/bV7oYdbQwoKd
+        \\HVOUQJ8gcl9k0frPXR/qr/CX/dW87t/vy49lsGHsM3b+NQ4TmjkRkSvDJgK4rnM6dSZEHy
+        \\5UAWlmo1saQnLG06/Ui6/at6F2gaNNlFHSjwvOruKCUnRlUAAAADAQABAAAAgFmqzTt02Q
+        \\2SePrKfMNFoLVyDL0rAeOSUAhMh1l4uI+U+DhjFT8pgw31xDjOna5sDdOBuFRwXHnkYE0+
+        \\cnqy9YkTIyqLz+O1WPwJrX8xHY4KnYBAkhsXvJnmhSxJZM/9IJztBLyzwTuI3sRUcJ15S5
+        \\IlI3YKM2fBMkMTa6Sah+clAAAAQQDL+BSk78zrQfel/enOosLombu6LFHDD79TToz+cFBG
+        \\AE8RKtpRDwp9ZGbQ/wjKmETU8F81V+YmJ8ZKdGGVRcBDAAAAQQDuk4nzpOcvy0cCHzphaY
+        \\DDb9RvHCSIENE6JjhiaVNfPKzGJcrEucsGA8q1KYJPqstorMWsPwEORMFygX61fvJfAAAA
+        \\QQDGrF3ac2jIh7WU++00o3lsGm7rqhQUNJ63nHDMgFbo65OIk55PGT5x+yNayRy/Z92gvQ
+        \\KITxCvrdPBzRqxzQvLAAAABGFnZXoBAgMEBQY=
+        \\-----END OPENSSH PRIVATE KEY-----
+        .*
+    ;
+    const id = try SshParser.parseOpenSshPrivateKey(&private_key);
+    const test_file_key = "YELLOW SUBMARINE";
+    const allocator = std.testing.allocator;
+    var age_reader = AgeReader(
+        @TypeOf(fbs.reader()),
+    ){
+        .allocator = allocator,
+        .r = .{ .normal = fbs.reader() },
+    };
+    defer age_reader.deinit();
+
+    var age = try age_reader.read();
+    defer age.deinit(allocator);
+
+    try t.expect(age.version.? == .v1);
+    try t.expect(age.recipients.items.len == 1);
+    try t.expect(age.mac.?.len == 43);
+
+    try t.expect(age.recipients.items[0].type == .@"ssh-rsa");
+    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[0], "UI4tAQ"));
+    try t.expect(mem.eql(u8, age.recipients.items[0].body.?,
+            \\AmzFOlub++Nsaxhme3ynSwrSjYZwYIyt91m2+CXZnkOGDMurW8vVyERWQZRQxB5j
+            \\c9KVBe+MhHGt8zMjhytnjepioA4bCJgnxLUKU4u8WzH68TbCFb5wcoiNkTVOejyy
+            \\NGV+DSwX6vBCzxsaswpYFbhG0X6wzYweUqJgvovYW/k
+    ));
+
+    var file_key = try age.recipients.items[0].unwrap(allocator, id);
+    defer file_key.deinit(allocator);
+
+    try t.expect(age.recipients.items[0].state == .unwrapped);
+
+    try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
+    try t.expect(age.verify_hmac(allocator, &file_key));
+
+    try age.recipients.items[0].wrap(allocator, file_key, id);
+
+    try t.expect(age.recipients.items[0].state == .wrapped);
 }

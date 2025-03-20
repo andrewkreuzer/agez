@@ -25,7 +25,7 @@ pub const Key = union(KeyType) {
 
     /// Allocates a new Key
     /// suppoerted key types are:
-    /// * []u8
+    /// * []u8, []const u8
     /// * Ed25519.KeyPair
     /// * Rsa.KeyPair
     /// * usize (generates a random key)
@@ -33,13 +33,8 @@ pub const Key = union(KeyType) {
         switch (@TypeOf(T)) {
             comptime_int, usize => return .{ .slice = .{ .k = try allocator.alloc(u8, T) }},
             [32]u8 => return .{ .slice = .{ .k = try allocator.dupe(u8, &T) }},
-            []u8 => return .{ .slice = .{ .k = try allocator.dupe(u8, T) }},
-            Ed25519.KeyPair => {
-                const kp = try allocator.create(Ed25519.KeyPair);
-                kp.* = T;
-                const k: Key = .{ .ed25519 = kp.* };
-                return k;
-            },
+            []u8, []const u8 => return .{ .slice = .{ .k = try allocator.dupe(u8, T) }},
+            Ed25519.KeyPair => return .{ .ed25519 = T },
             Rsa.KeyPair => return .{ .rsa = T },
             else => return error.UnsupportedKeyType,
         }
@@ -72,3 +67,8 @@ pub const Key = union(KeyType) {
         return self.slice.pk;
     }
 };
+
+const KeyError = error{
+    UnsupportedKeyType,
+};
+

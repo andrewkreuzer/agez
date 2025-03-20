@@ -59,23 +59,31 @@ pub const rsa = struct {
         const Encoder = std.base64.standard_no_pad.Encoder;
 
         var buf: []u8 = try allocator.alloc(u8, public_key.size());
+        defer allocator.free(buf);
         const n = try public_key.encryptOaep(buf, file_key.key().bytes, rsa_key_label);
         const encoded_buf: []u8 = try allocator.alloc(u8, Encoder.calcSize(n));
         defer allocator.free(encoded_buf);
         const encoded = Encoder.encode(encoded_buf, buf[0..n]);
 
         var body = ArrayList([]const u8).init(allocator);
+        defer body.deinit();
         var iter = std.mem.window(u8, encoded, 64, 64);
+        var short = false;
         while (true) {
             const line = iter.next();
             if (line == null) break;
+            if (line.?.len < 64) short = true;
             try body.append(line.?);
         }
-        const b = try std.mem.join(allocator, "\n", try body.toOwnedSlice());
+        if (!short) try body.append("");
+        const b_slice = try body.toOwnedSlice();
+        const b = try std.mem.join(allocator, "\n", b_slice);
+        defer allocator.free(b_slice);
 
         const size_of_e = 3;
         const size = @sizeOf(u32) + public_key.size() + size_of_e + 16;
         const ssh_key = try allocator.alloc(u8, size);
+        defer allocator.free(ssh_key);
 
         var pk = public_key;
         var i = pk.e.v.limbs_len - 1;
@@ -94,7 +102,7 @@ pub const rsa = struct {
         args[0] = try allocator.dupe(u8, &ssh_tag_b64);
 
         return .{
-            .type = .rsa,
+            .type = .@"ssh-rsa",
             .args = args,
             .body = b,
         };

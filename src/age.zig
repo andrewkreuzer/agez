@@ -248,11 +248,10 @@ fn incrementNonce(nonce: []u8) !void {
     }
 }
 
-const KeyError = error{
-    InvalidKey,
+const AgeError = error{
+    AuthenticationFailed,
     InvalidKeyNonce,
     NonceRollOver,
-    UnsupportedKeyType,
 };
 
 test "round trip" {
