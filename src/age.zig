@@ -23,11 +23,12 @@ pub const Age = struct {
         };
     }
 
-    pub fn verify_hmac(self: *Self, allocator: Allocator, fk: *const Key) bool {
-        const encoded = generate_hmac(allocator, self.header.?, fk)
-            catch return false;
+    pub fn verify_hmac(self: *Self, allocator: Allocator, fk: *const Key) !void {
+        const encoded = try generate_hmac(allocator, self.header.?, fk);
         defer allocator.free(encoded);
-        return std.mem.eql(u8, self.mac.?, encoded);
+        if (!std.mem.eql(u8, self.mac.?, encoded)) {
+            return error.InvalidHmac;
+        }
     }
 
     pub fn unwrap(self: *Self, allocator: Allocator, identity: Key) !Key {
@@ -214,20 +215,24 @@ pub fn ageDecrypt(
     while (true) {
         const read = try reader.readAll(&read_buffer);
         if (read == 0) { break; }
+        if (read < chacha_tag_length) return error.AgeDecryptFailure;
         if (read < age_chunk_size) {
             nonce[nonce.len-1] = 0x01;
         }
 
         @memcpy(&tag, read_buffer[read-chacha_tag_length..read]);
 
-        try ChaCha20Poly1305.decrypt(
+        ChaCha20Poly1305.decrypt(
             write_buffer[0..read-chacha_tag_length],
             read_buffer[0..read-chacha_tag_length],
             tag,
             &ad,
             nonce,
             encryption_key
-        );
+        ) catch |err| switch (err) {
+            error.AuthenticationFailed => return error.AgeDecryptFailure,
+            else => return err,
+        };
         _ = try writer.write(write_buffer[0..read-chacha_tag_length]);
         try incrementNonce(&nonce);
     }
@@ -248,8 +253,10 @@ fn incrementNonce(nonce: []u8) !void {
 }
 
 const AgeError = error{
+    AgeDecryptFailure,
     AuthenticationFailed,
     InvalidKeyNonce,
+    InvalidHmac,
     NonceRollOver,
 };
 

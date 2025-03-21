@@ -35,7 +35,7 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
 
         marker_found: bool = false,
 
-        pub const Error = ReaderType.Error;
+        pub const Error = ReaderType.Error || ArmorError;
         pub const NoEofError = Error || error{
             EndOfStream,
         };
@@ -72,7 +72,7 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
         fn fill2(self: *Self) Error!usize {
             if (self.marker_found) return 0;
 
-            var buf = [_]u8{0} ** armor_columns_per_line;
+            var buf: [armor_columns_per_line]u8 = undefined;
             var n = try self.r.readAll(&buf);
             var slice = buf[0..n];
             if (n == 0) return 0;
@@ -80,15 +80,17 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
             // We really only do this to consume the '\n'
             var c = self.r.readByte() catch |err| switch (err) {
                 error.EndOfStream => 0,
-                else => unreachable, //TODO: probably reachable
+                else => unreachable,
             };
 
+
             if (n != armor_columns_per_line) {
+                if (n < armor_end_marker.len) return error.ArmorNoEndMarker;
                 const start = n - armor_end_marker.len;
                 const marker = slice[start..n];
                 if (mem.eql(u8, marker, armor_end_marker)) {
                     slice = buf[0..start-1];
-                } else unreachable;
+                } else return error.ArmorInvalidLineLength;
 
             } else {
                 // TODO: confirm end marker is correct
@@ -110,13 +112,11 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
                 }
             }
 
-            n = Decoder.calcSizeForSlice(slice) catch |err| {
-                std.debug.print("Error calculating size: {any}\n", .{err});
-                return 0;
+            n = Decoder.calcSizeForSlice(slice) catch {
+                return error.ArmorDecodeError;
             };
-            Decoder.decode(self.buf[0..n], slice) catch |err| {
-                std.debug.print("Error decoding: {any}\n", .{err});
-                return 0;
+            Decoder.decode(self.buf[0..n], slice) catch {
+                return error.ArmorDecodeError;
             };
             return n;
         }
@@ -198,6 +198,8 @@ pub fn ArmoredWriter(comptime WriterType: type) type {
 
 pub const ArmorError = error{
     ArmorInvalidLineLength,
+    ArmorNoEndMarker,
+    ArmorDecodeError,
 };
 
 test "encode decode" {

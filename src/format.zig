@@ -22,7 +22,8 @@ const FormatError = error{
     InvalidAscii,
     NoIdentityMatch,
     NoIdentities,
-    // InvalidHeader,
+    EmptyStanza,
+    InvalidHeader,
     // InvalidVersion,
     // UnsupportedVersion,
 };
@@ -120,7 +121,7 @@ pub fn AgeReader(
 
                 /// Reads lines of the file,
                 /// keeping track of the line number and header.
-                fn next(iter: *Iter) ?Line {
+                fn next(iter: *Iter) !?Line {
                     var fbs = io.fixedBufferStream(&iter.buf);
                     var r = iter.r;
                     const w = fbs.writer();
@@ -130,11 +131,14 @@ pub fn AgeReader(
                         error.EndOfStream => {
                             return .{ .prefix = .unknown, .bytes = fbs.getWritten(), };
                         },
+                        error.ArmorDecodeError, error.ArmorInvalidLineLength => return err,
                         else => unreachable,
                     };
 
                     const line = fbs.getWritten();
 
+                    // TODO: error on armor file with
+                    // wrong header
                     if (armor.isArmorBegin(line)) {
                         return .{ .prefix = Prefix.armor_begin, .bytes = line, };
                     }
@@ -149,8 +153,9 @@ pub fn AgeReader(
                     iter.line += 1;
                     iter.read += line.len;
 
-                    // TODO: fix index out of bounds
-                    // when empty line
+                    if (line.len < 3) {
+                        return .{ .prefix = Prefix.unknown, .bytes = line, };
+                    }
                     const prefix = line[0..3];
                     return .{
                         .prefix = Prefix.match(prefix),
@@ -203,8 +208,9 @@ pub fn AgeReader(
             const Iter = Iterator();
             var iter: Iter = .{ .r = self.r };
             var age = Age.init(self.allocator);
+            errdefer age.deinit(self.allocator);
 
-            while (iter.next()) |line| {
+            while (try iter.next()) |line| {
                 line: switch (line.prefix) {
                     .armor_begin => {
                         self.armored_reader = ArmoredReaderType{ .r = self.r.normal };
@@ -214,44 +220,54 @@ pub fn AgeReader(
                     },
                     .version => age.version = Version.fromStr(line.bytes),
                     .stanza => {
-                        var args = blk: {
+                        const t, const args = blk: {
                             var a = std.ArrayList([]u8).init(self.allocator);
+                            errdefer {
+                                for (a.items) |arg| self.allocator.free(arg);
+                                a.deinit();
+                            }
                             const stanza = line.bytes[3..];
+                            if (stanza.len == 0) return error.EmptyStanza;
 
                             var i: usize = 0;
                             var j: usize = 0;
                             while (j < stanza.len) {
-                                if (!Self.isValidAscii(stanza[j])) {
-                                    return error.InvalidAscii;
-                                }
+                                try Self.isValidAscii(stanza[j]);
+
                                 if (stanza[j] == ' ') {
                                     const value = try self.allocator.dupe(u8, stanza[i .. j]);
+                                    errdefer self.allocator.free(value);
                                     try a.append(value);
-
                                     i = j + 1;
                                 }
                                 if (j == stanza.len - 1) {
                                     const value = try self.allocator.dupe(u8, stanza[i .. j + 1]);
+                                    errdefer self.allocator.free(value);
                                     try a.append(value);
-
                                     i = j + 1;
                                 }
                                 j += 1;
                             }
 
-                            break :blk a;
+                            break :blk .{a.swapRemove(0), try a.toOwnedSlice()};
                         };
+                        errdefer {
+                            self.allocator.free(t);
+                            for (args) |arg| self.allocator.free(arg);
+                            self.allocator.free(args);
+                        }
+
+                        const _type = try RecipientType.fromStanzaArg(t);
+                        self.allocator.free(t);
 
                         const b = try iter.readUntilFalseOrEof(isStanzaBody);
-
                         const body = try self.allocator.alloc(u8, b.len);
+                        errdefer self.allocator.free(body);
                         @memcpy(body, b);
 
-                        const recipient_type = args.swapRemove(0);
-                        defer self.allocator.free(recipient_type);
                         try age.recipients.append(.{
-                            .type = try RecipientType.fromStanzaArg(recipient_type),
-                            .args = try args.toOwnedSlice(),
+                            .type = _type,
+                            .args = args,
                             .body = body,
                         });
                     },
@@ -265,19 +281,17 @@ pub fn AgeReader(
                         age.header = try self.allocator.dupe(u8, iter.header[0..header_len]);
                         return age;
                     },
-                    else => return error.Unexpected,
+                    else => return error.InvalidHeader,
                 }
-            }
-            return error.Unexpected;
+            } else return error.InvalidHeader;
         }
 
         // The valid subset of ascii for age strings is 33-126
         // but we include 32 (space) for convenience
-        fn isValidAscii(c: u8) bool {
+        fn isValidAscii(c: u8) FormatError!void {
             if (c < 32 or c > 126) {
-                return false;
+                return error.InvalidAscii;
             }
-            return true;
         }
 
         // TODO: validate trailing bits
@@ -464,7 +478,7 @@ test "age file" {
     try t.expect(age.recipients.items[0].state == .unwrapped);
 
     try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
-    try t.expect(age.verify_hmac(allocator, &file_key));
+    try age.verify_hmac(allocator, &file_key);
 
 
     var identity_buf: [90]u8 = undefined;
@@ -524,7 +538,7 @@ test "armored age file" {
     try t.expect(age.recipients.items[0].state == .unwrapped);
 
     try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
-    try t.expect(age.verify_hmac(allocator, &file_key));
+    try age.verify_hmac(allocator, &file_key);
 
 
     var identity_buf: [90]u8 = undefined;
@@ -556,11 +570,11 @@ test "iterator" {
         .r = .{ .normal = fbs.reader() },
     };
 
-    try t.expectEqualStrings("age-encryption.org/v1", (iter.next()).?.bytes);
-    try t.expectEqualStrings("-> X25519 TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc", (iter.next()).?.bytes);
-    try t.expectEqualStrings("EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U", (iter.next()).?.bytes);
-    try t.expectEqualStrings("--- Vn+54jqiiUCE+WZcEVY3f1sqHjlu/z1LCQ/T7Xm7qI0", (iter.next()).?.bytes);
-    try t.expect(iter.next().?.bytes.len == 0);
+    try t.expectEqualStrings("age-encryption.org/v1", (try iter.next()).?.bytes);
+    try t.expectEqualStrings("-> X25519 TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc", (try iter.next()).?.bytes);
+    try t.expectEqualStrings("EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U", (try iter.next()).?.bytes);
+    try t.expectEqualStrings("--- Vn+54jqiiUCE+WZcEVY3f1sqHjlu/z1LCQ/T7Xm7qI0", (try iter.next()).?.bytes);
+    try t.expect((try iter.next()).?.bytes.len == 0);
 }
 
 test "invalid" {

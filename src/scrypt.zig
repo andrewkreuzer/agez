@@ -63,8 +63,19 @@ pub fn unwrap(allocator: Allocator, passphrase: []const u8, args: [][]u8, body: 
     const work_factor = std.fmt.parseInt(u6, args[0], 10) catch {
         return error.InvalidScryptWorkFactor;
     };
+    if (work_factor > 20) {
+        return error.InvalidScryptWorkFactor;
+    }
 
     const Decoder = std.base64.standard_no_pad.Decoder;
+    const body_len = try Decoder.calcSizeForSlice(body);
+    if (body_len != 32) {
+        return error.InvalidScryptKeyLength;
+    }
+    const salt_len = try Decoder.calcSizeForSlice(args[1]);
+    if (salt_len != 16) {
+        return error.InvalidScryptSaltLength;
+    }
     Decoder.decode(salt[key_label.len..], args[1]) catch {
         return error.InvalidScryptSalt;
     };
@@ -87,6 +98,7 @@ pub fn unwrap(allocator: Allocator, passphrase: []const u8, args: [][]u8, body: 
     const file_key: Key = .{
         .slice = .{ .k = try allocator.alloc(u8, payload.len) }
     };
+    errdefer file_key.deinit(allocator);
 
     try ChaCha20Poly1305.decrypt(file_key.slice.k, payload, tag, &ad, nonce, key);
 
@@ -131,6 +143,7 @@ pub fn wrap(allocator: Allocator, file_key: Key, passphrase: Key) !Recipient {
     );
 
     const pp = passphrase.key().bytes;
+    // TODO: make this configurable
     const work_factor: u6 = 15;
     try scrypt.kdf(
         allocator,
@@ -163,4 +176,6 @@ const ScryptErrors = error{
     InvalidScryptWorkFactor,
     InvalidScryptSalt,
     InvalidScryptBody,
+    InvalidScryptKeyLength,
+    InvalidScryptSaltLength,
 };

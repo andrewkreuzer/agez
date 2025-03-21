@@ -99,6 +99,14 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
     }
 
     const Decoder = std.base64.standard_no_pad.Decoder;
+    const share_len = try Decoder.calcSizeForSlice(args[0]);
+    if (share_len != ephemeral_share.len) {
+        return error.InvalidX25519ShareLength;
+    }
+    const body_len = try Decoder.calcSizeForSlice(body);
+    if (body_len != ChaCha20Poly1305.key_length) {
+        return error.InvalidX25519KeyLength;
+    }
     Decoder.decode(&ephemeral_share, args[0]) catch {
         return error.InvalidX25519Argument;
     };
@@ -129,6 +137,7 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
     const file_key: Key = .{
         .slice = .{ .k = try allocator.alloc(u8, payload.len) }
     };
+    errdefer file_key.deinit(allocator);
 
     try ChaCha20Poly1305.decrypt(file_key.slice.k, payload, tag, &ad, nonce, key);
 
@@ -214,4 +223,6 @@ const X25519Errors = error{
     InvalidX25519Identity,
     InvalidX25519Argument,
     InvalidX25519Body,
+    InvalidX25519ShareLength,
+    InvalidX25519KeyLength,
 };

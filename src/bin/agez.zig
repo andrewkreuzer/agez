@@ -115,9 +115,11 @@ pub fn main() !void {
         exit(1);
     }
 
+    const reader = io.reader();
+    const writer = io.writer();
     if (decrypt) {
-        try lib.decrypt(allocator, &io, identities.?);
+        try lib.decrypt(allocator, reader.any(), writer.any(), identities.?);
     } else {
-        try lib.encrypt(allocator, &io, file_key, recipients, armored);
+        try lib.encrypt(allocator, reader.any(), writer.any(), file_key, recipients, armored);
     }
 }

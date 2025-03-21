@@ -1,5 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const AnyReader = std.io.AnyReader;
+const AnyWriter = std.io.AnyWriter;
 const ArrayList = std.ArrayList;
 const File = std.fs.File;
 
@@ -23,14 +25,12 @@ const Args = cli.Args;
 
 pub fn encrypt(
     allocator: Allocator,
-    io: *Io,
+    reader: AnyReader,
+    writer: AnyWriter,
     file_key: Key,
     recipients: ArrayList(Recipient),
     armored: bool,
 ) !void {
-    const reader = io.reader();
-    const writer = io.writer();
-
     const age: Age = .{
         .version = .v1,
         .recipients = recipients,
@@ -43,12 +43,10 @@ pub fn encrypt(
 
 pub fn decrypt(
     allocator: Allocator,
-    io: *Io,
+    reader: AnyReader,
+    writer: AnyWriter,
     identities: []Key,
 ) !void {
-    const reader = io.reader();
-    const writer = io.writer();
-
     var age_reader = AgeReader(@TypeOf(reader)).init(allocator, reader);
     defer age_reader.deinit();
 
@@ -56,16 +54,14 @@ pub fn decrypt(
     defer age.deinit(allocator);
 
     const file_key: Key = for (identities) |id| {
-        break age.unwrap(allocator, id) catch |err| {
-            std.debug.print("failed to unwrap: {any}\n", .{err});
-            continue;
+        break age.unwrap(allocator, id) catch |err| switch (err) {
+            error.AuthenticationFailed => continue,
+            else => return err,
         };
     } else return error.NoIdentityMatch;
     defer file_key.deinit(allocator);
 
-    if (!age.verify_hmac(allocator, &file_key)) {
-        std.debug.print("hmac mismatch\n", .{});
-    }
+    try age.verify_hmac(allocator, &file_key);
 
     _ = try ageDecrypt(&file_key, age_reader.r, writer);
 }

@@ -10,6 +10,7 @@ pub fn build(b: *std.Build) !void {
     const run_step = b.step("run", "Run the app");
     const run_keygen_step = b.step("run-keygen", "Run the app");
     const test_step = b.step("test", "Run unit tests");
+    const testkit_step = b.step("testkit", "Run testkit tests");
 
     const lib = b.addStaticLibrary(.{
         .name = "agez",
@@ -67,4 +68,13 @@ pub fn build(b: *std.Build) !void {
     run_keygen_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| { run_keygen_cmd.addArgs(args); }
     run_keygen_step.dependOn(&run_keygen_cmd.step);
+
+    const testkit = b.addTest(.{
+        .root_source_file = b.path("tests/testkit.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    testkit.root_module.addImport("lib", lib_module);
+    const run_testkit = b.addRunArtifact(testkit);
+    testkit_step.dependOn(&run_testkit.step);
 }
