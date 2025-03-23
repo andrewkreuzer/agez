@@ -7,7 +7,7 @@ const ArgIterator = process.ArgIterator;
 const ArgIteratorGeneral = process.ArgIteratorGeneral;
 const Allocator = std.mem.Allocator;
 
-const Arg = struct {
+pub const Arg = struct {
     short: ?[]const u8 = null,
     long: ?[]const u8 = null,
     type: ?ArgType = null,
@@ -21,7 +21,7 @@ const Arg = struct {
         none,
     };
 
-    fn init(short: ?[]const u8, long: ?[]const u8, description: ?[]const u8) Arg {
+    pub fn init(short: ?[]const u8, long: ?[]const u8, description: ?[]const u8) Arg {
         comptime {
             return .{
                 .short = short,
@@ -31,7 +31,7 @@ const Arg = struct {
         }
     }
 
-    fn set(self: *Arg, T: anytype) !void {
+    pub fn set(self: *Arg, T: anytype) !void {
         switch(@TypeOf(T)) {
             bool => self.type = .{ .flag = T },
             [:0]const u8 => self.type = .{ .value = T },
@@ -64,7 +64,7 @@ const Arg = struct {
         } else return null;
     }
 
-    fn eql(self: Arg, arg: []const u8) bool {
+    pub fn eql(self: Arg, arg: []const u8) bool {
         if (self.short == null or self.long == null) return false;
         return mem.eql(u8, arg, self.short.?) or mem.eql(u8, arg, self.long.?);
     }
