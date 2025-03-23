@@ -17,8 +17,15 @@ const armor_end_map = blk: {
     break :blk map;
 };
 
-pub fn isArmorBegin(line: []u8) bool {
-    return std.mem.eql(u8, line, armor_begin_marker);
+pub fn isArmorBegin(line: []u8) !bool {
+    if (line.len < armor_begin_marker.len) return false;
+    const slice = line[0..armor_begin_marker.len];
+    const prefix = armor_begin_marker[0..5];
+    const full_match = std.mem.eql(u8, slice, armor_begin_marker);
+    if (std.mem.eql(u8, slice[0..5], prefix) and !full_match) {
+        return error.ArmorInvalidMarker;
+    }
+    return full_match;
 }
 
 pub fn isArmorEnd(line: []u8) bool {
@@ -45,71 +52,57 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
 
         const Self = @This();
 
-        //-rw-r--r-- 1 akreuzer users 2.4G Mar  1 18:51 /tmp/age-test.age
-        //./zig-out/bin/agez -i id -d /tmp/age-test.age > /dev/null  9.58s user 0.45s system 99% cpu 10.059 total
         fn fill(self: *Self) Error!usize {
-            const line = if (
-                self.r.readUntilDelimiterOrEof(self.encoded_buf[0..], '\n') catch |err| {
-                    std.debug.print("Error reading line: {any}\n", .{err});
-                    return 0;
-            }) |l| l else "";
-
-            if (std.mem.eql(u8, line, armor_end_marker)) return 0;
-
-            const n = Decoder.calcSizeForSlice(line) catch |err| {
-                std.debug.print("Error calculating size: {any}\n", .{err});
-                return 0;
-            };
-            Decoder.decode(self.buf[0..n], line) catch |err| {
-                std.debug.print("Error decoding: {any}\n", .{err});
-                return 0;
-            };
-            return n;
-        }
-
-        //-rw-r--r-- 1 akreuzer users 2.4G Mar  1 18:51 /tmp/age-test.age
-        //./zig-out/bin/agez -i id -d /tmp/age-test.age > /dev/null  3.36s user 0.39s system 99% cpu 3.756 total
-        fn fill2(self: *Self) Error!usize {
             if (self.marker_found) return 0;
 
             var buf: [armor_columns_per_line]u8 = undefined;
             var n = try self.r.readAll(&buf);
-            var slice = buf[0..n];
             if (n == 0) return 0;
 
-            // We really only do this to consume the '\n'
-            var c = self.r.readByte() catch |err| switch (err) {
-                error.EndOfStream => 0,
-                else => unreachable,
-            };
+            var slice = buf[0..n];
 
-
+            // if we read less than 64 bytes the end
+            // marker must be at the end of the buffer
             if (n != armor_columns_per_line) {
                 if (n < armor_end_marker.len) return error.ArmorNoEndMarker;
-                const start = n - armor_end_marker.len;
-                const marker = slice[start..n];
-                if (mem.eql(u8, marker, armor_end_marker)) {
-                    slice = buf[0..start-1];
-                } else return error.ArmorInvalidLineLength;
+                if (mem.indexOf(u8, slice, armor_end_marker)) |start| {
+                    var s = start;
+                    if (s == 0) return 0;
+                    if (s > 0 and slice[s-1] == '\n') s -= 1;
+                    if (s > 0 and slice[s-1] == '\r') s -= 1;
+                    slice = slice[0..s];
+                } else return error.ArmorNoEndMarker;
 
             } else {
-                // TODO: confirm end marker is correct
-                // currently we just assume it is
-                c = slice[n-1];
-                var pos = armor_end_map[c];
+                // our buffer is full we need to check if
+                // the last character is in the end marker
+                // and walk our way back to the start if so
+                const b = slice[n-1];
+                var pos = armor_end_map[b];
                 if (pos != 0) {
                     const start = n - pos;
                     const maybe_marker = slice[start..n];
                     while (pos > 0) {
                         pos -= 1;
-                        const chr = maybe_marker[pos];
-                        if (pos < armor_end_marker.len and chr == '\n') {
+                        const c = maybe_marker[pos];
+                        // TODO: confirm end marker is correct
+                        // currently we just assume it is
+                        if (pos < armor_end_marker.len and c == '\n') {
                             self.marker_found = true;
+                            if (pos > 0 and slice[pos-1] == '\r') pos -= 1;
                             slice = buf[0..start+pos];
                         }
-                        if (armor_end_map[chr] == 0) break;
+                        if (armor_end_map[c] == 0) break;
                     }
                 }
+            }
+
+            // if we didn't find the end marker
+            // check that next byte is a newline
+            if (!self.marker_found) {
+                var c = self.r.readByte() catch 0;
+                if (c == '\r') c = self.r.readByte() catch 0;
+                if (c != 0 and c != '\n') return error.ArmorInvalidLine;
             }
 
             n = Decoder.calcSizeForSlice(slice) catch {
@@ -118,6 +111,7 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
             Decoder.decode(self.buf[0..n], slice) catch {
                 return error.ArmorDecodeError;
             };
+
             return n;
         }
 
@@ -130,7 +124,7 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
                 return n;
             }
 
-            self.end = try self.fill2();
+            self.end = try self.fill();
             const n = @min(dest.len, self.end);
             @memcpy(dest[0..n], self.buf[0..n]);
             self.start = n;
@@ -182,7 +176,7 @@ pub fn ArmoredWriter(comptime WriterType: type) type {
         }
 
         pub fn flush(self: *Self) Error!void {
-            var buf = [_]u8{0} ** armor_columns_per_line;
+            var buf: [armor_columns_per_line]u8 = undefined;
             const n = Encoder.calcSize(self.decoded_buf[0..self.end].len);
             _ = Encoder.encode(buf[0..n], self.decoded_buf[0..self.end]);
             try self.w.writeAll(buf[0..n]);
@@ -197,6 +191,8 @@ pub fn ArmoredWriter(comptime WriterType: type) type {
 }
 
 pub const ArmorError = error{
+    ArmorInvalidMarker,
+    ArmorInvalidLine,
     ArmorInvalidLineLength,
     ArmorNoEndMarker,
     ArmorDecodeError,
@@ -221,12 +217,12 @@ test "encode decode" {
     const words_reader = fbs_decode.reader();
     var armored_reader = ArmoredReader(@TypeOf(words_reader)){.r = words_reader };
     const reader = armored_reader.reader();
-    var buf_decode = [_]u8{0} ** words.len;
+    var buf_decode: [words.len]u8 = undefined;
     var n = try reader.readAll(&buf_decode);
 
     try t.expectEqualSlices(u8, words, buf_decode[0..n]);
 
-    var buf_encode = [_]u8{0} ** words_encoded.len;
+    var buf_encode: [words_encoded.len]u8 = undefined;
     var fbs_encode = std.io.fixedBufferStream(&buf_encode);
     const words_writer = fbs_encode.writer();
     var armored_writer = ArmoredWriter(@TypeOf(words_writer)){.w = words_writer };
@@ -238,13 +234,33 @@ test "encode decode" {
     try t.expectEqualSlices(u8, words_encoded, buf_encode[0..]);
 }
 
+test "invalid header" {
+    const t = std.testing;
+    const words_encoded =
+        \\ Header: not valid
+        \\
+        \\YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB4cWM5Vno0Q1dicFdRaFJ6
+        \\cXRWRlRSS1Bnc29SOHdENmtTdTBYN1RvTkhzCjVkbzZpTzh6MnEwWHhEN2dSMURV
+        \\bWZCb2hXUCtzaHBrK2pZcHhsTS92ck0KLS0tICs5Y2tuQktUcEw5Snh6bTB0M0Yv
+        \\K1lQb1IvUlIzTXc3ZmhTYU0yL2NJ
+        \\-----END AGE ENCRYPTED FILE-----
+        ;
+    var fbs_decode = std.io.fixedBufferStream(words_encoded);
+    const words_reader = fbs_decode.reader();
+    var armored_reader = ArmoredReader(@TypeOf(words_reader)){.r = words_reader };
+    const reader = armored_reader.reader();
+    var buf_decode: [128]u8 = undefined;
+    try t.expectError(error.ArmorInvalidLine, reader.readAll(&buf_decode));
+
+}
+
 test "flush" {
     const t = std.testing;
     const words =
         \\a small string
         ;
 
-    var buf_encode = [_]u8{0} ** 128;
+    var buf_encode: [128]u8 = undefined;
     var fbs_encode = std.io.fixedBufferStream(&buf_encode);
     const words_writer = fbs_encode.writer();
     var armored_writer = ArmoredWriter(@TypeOf(words_writer)){.w = words_writer };
@@ -295,7 +311,6 @@ test "fill" {
         .{
             .data =
                 \\YSBzdHJpbmcgdGhhdCBpcyA0NyBieXRlcyBsb25nIHRvIHRlc3QgZW5kIGNhc2U=
-                \\
                 \\-----END AGE ENCRYPTED FILE-----
             , .expect = "a string that is 47 bytes long to test end case"
         },
@@ -311,7 +326,7 @@ test "fill" {
         const fbs_reader = fbs.reader();
         var armored_reader = ArmoredReader(@TypeOf(fbs_reader)){.r = fbs_reader };
         const reader = armored_reader.reader();
-        var buf_decode = [_]u8{0} ** 512;
+        var buf_decode: [512]u8 = undefined;
         const n = try reader.readAll(&buf_decode);
 
         try t.expectEqualSlices(u8, case.expect, buf_decode[0..n]);

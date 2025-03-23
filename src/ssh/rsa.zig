@@ -263,7 +263,7 @@ pub const SecretKey = struct {
 fn mgf1Xor(dst: []u8, seed: []u8) void {
     var counter: u32 = 0;
     var i: usize = 0;
-    var c = [_]u8{0} ** 4;
+    var c: [4]u8 = undefined;
     while (i < dst.len) {
         mem.writeInt(u32, &c, counter, .big);
 

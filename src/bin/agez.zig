@@ -44,7 +44,7 @@ pub fn main() !void {
         const f = try Io.openFile(file_name);
         defer f.close();
         const reader = f.reader();
-        var buf = [_]u8{0} ** 90;
+        var buf: [90]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&buf);
         const writer = fbs.writer();
         while (true) {
@@ -62,8 +62,8 @@ pub fn main() !void {
     const identities: ?[]Key = switch (args.passphrase.flag()) {
         true => blk: {
             var id = try allocator.alloc(Key, 1);
-            var passphrase_buf = [_]u8{0} ** 128;
-            const passphrase = try Io.read_passphrase(&passphrase_buf);
+            var passphrase_buf: [128]u8 = undefined;
+            const passphrase = try Io.read_passphrase(&passphrase_buf, !decrypt);
             defer std.crypto.utils.secureZero(u8, passphrase);
             id[0] = try Key.init(allocator, passphrase);
             const r = try Recipient.fromPassphrase(allocator, passphrase, file_key);
@@ -74,14 +74,14 @@ pub fn main() !void {
             if (args.identity.values()) |files| {
                 var ids = ArrayList(Key).init(allocator);
                 for (files) |file_name| {
-                    var identity_buf = [_]u8{0} ** 90;
+                    var identity_buf: [90]u8 = undefined;
                     defer std.crypto.utils.secureZero(u8, &identity_buf);
 
                     const line = try Io.readFirstLine(&identity_buf, file_name);
                     const prefix = line[0..14];
                     if (line.len == 0) continue;
                     if (mem.eql(u8, prefix[0..PemDecoder.header.len], PemDecoder.header)) {
-                        var in_buf = [_]u8{0} ** PemDecoder.max_key_size;
+                        var in_buf: [PemDecoder.max_key_size]u8 = undefined;
                         const f = try Io.openFile(file_name);
                         const reader = f.reader();
                         const n = try reader.readAll(&in_buf);

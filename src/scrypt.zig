@@ -12,7 +12,7 @@ const rounds = 8;
 const parallization = 1;
 
 pub fn toStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
-    var buf = [_]u8{0} ** 128;
+    var buf: [128]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     const writer = fbs.writer();
 
@@ -57,10 +57,10 @@ pub fn unwrap(allocator: Allocator, passphrase: []const u8, args: [][]u8, body: 
     // an empty associated data
     const ad = [_]u8{};
 
-    if (args.len != 2) {
-        return error.InvalidRecipientArgs;
-    }
-    const work_factor = std.fmt.parseInt(u6, args[0], 10) catch {
+    if (args.len != 2) return error.InvalidRecipientArgs;
+    if (args[1][0] == '0') return error.InvalidScryptWorkFactor;
+    if (args[1][0] == '+') return error.InvalidScryptWorkFactor;
+    const work_factor = std.fmt.parseInt(u6, args[1], 0) catch {
         return error.InvalidScryptWorkFactor;
     };
     if (work_factor > 20) {
@@ -72,11 +72,11 @@ pub fn unwrap(allocator: Allocator, passphrase: []const u8, args: [][]u8, body: 
     if (body_len != 32) {
         return error.InvalidScryptKeyLength;
     }
-    const salt_len = try Decoder.calcSizeForSlice(args[1]);
+    const salt_len = try Decoder.calcSizeForSlice(args[0]);
     if (salt_len != 16) {
         return error.InvalidScryptSaltLength;
     }
-    Decoder.decode(salt[key_label.len..], args[1]) catch {
+    Decoder.decode(salt[key_label.len..], args[0]) catch {
         return error.InvalidScryptSalt;
     };
     Decoder.decode(&file_key_enc, body) catch {

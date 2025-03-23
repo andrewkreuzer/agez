@@ -173,10 +173,10 @@ pub const ed25519 = struct {
         }
 
         const Decoder = std.base64.standard_no_pad.Decoder;
-        Decoder.decode(&rpk_ssh_tag, args[1]) catch {
+        Decoder.decode(&rpk_ssh_tag, args[0]) catch {
             return error.InvalidSshArgument;
         };
-        Decoder.decode(&epk, args[0]) catch {
+        Decoder.decode(&epk, args[1]) catch {
             return error.InvalidSshArgument;
         };
         Decoder.decode(&file_key_enc, body) catch {

@@ -166,8 +166,8 @@ test "scrypt recipient" {
         .args = try allocator.alloc([]u8, 2),
         .body = try allocator.dupe(u8, "gUjEymFKMVXQEKdMMHL24oYexjE3TIC0O0zGSqJ2aUY"),
     };
-    recipient.args.?[1] = try allocator.dupe(u8, "rF0/NwblUHHTpgQgRpe5CQ");
-    recipient.args.?[0] = try allocator.dupe(u8, "10");
+    recipient.args.?[0] = try allocator.dupe(u8, "rF0/NwblUHHTpgQgRpe5CQ");
+    recipient.args.?[1] = try allocator.dupe(u8, "10");
 
     const id: Key = .{ .slice = .{ .k = &passphrase } };
     var file_key = try recipient.unwrap(allocator, id);
@@ -202,8 +202,8 @@ test "ed25519 recipient" {
         .args = try allocator.alloc([]u8, 2),
         .body = try allocator.dupe(u8, "+Iil7T4RMV75FvQKvZD6gkjWsllUrW5SBHHxN2wMruw"),
     };
-    recipient.args.?[1] = try allocator.dupe(u8, "xk+TSA");
-    recipient.args.?[0] = try allocator.dupe(u8, "xSh4cYHalYztTjXKULvJhGWIEp8gCSIQ/zx13jGzalw");
+    recipient.args.?[0] = try allocator.dupe(u8, "xk+TSA");
+    recipient.args.?[1] = try allocator.dupe(u8, "xSh4cYHalYztTjXKULvJhGWIEp8gCSIQ/zx13jGzalw");
 
     const id: Key = try SshParser.parseOpenSshPrivateKey(&private_key);
     var file_key = try recipient.unwrap(allocator, id);

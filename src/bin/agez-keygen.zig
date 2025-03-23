@@ -4,13 +4,13 @@ const bech32 = @import("lib").bech32;
 
 pub fn main() !void {
 
-    var secret = [_]u8{0} ** 32;
+    var secret: [32]u8 = undefined;
     defer std.crypto.utils.secureZero(u8, &secret);
 
-    var recipient_bech32_buf = [_]u8{0} ** 90;
+    var recipient_bech32_buf: [90]u8 = undefined;
     defer std.crypto.utils.secureZero(u8, &recipient_bech32_buf);
 
-    var identity_bech32_buf = [_]u8{0} ** 90;
+    var identity_bech32_buf: [90]u8 = undefined;
     defer std.crypto.utils.secureZero(u8, &identity_bech32_buf);
 
     _ = std.os.linux.getrandom(

@@ -1,4 +1,5 @@
 const std = @import("std");
+const mem = std.mem;
 const io = std.io;
 const fs = std.fs;
 const exit = std.posix.exit;
@@ -70,7 +71,7 @@ pub fn readFirstLine(buf: []u8, file_name: []const u8) ![]u8 {
     }
 }
 
-pub fn read_passphrase(buf: []u8) ![]u8 {
+pub fn read_passphrase(buf: []u8, confirm: bool) ![]u8 {
     var fbs = std.io.fixedBufferStream(buf);
     const pwriter = fbs.writer();
 
@@ -89,11 +90,19 @@ pub fn read_passphrase(buf: []u8) ![]u8 {
 
     _ = try wtty.write("Enter passphrase: ");
     try rtty.streamUntilDelimiter(pwriter, '\n', buf.len);
+    const p1 = fbs.getWritten();
+    fbs.reset();
+
+    if (confirm) {
+        _ = try wtty.write("Confirm passphrase: ");
+        try rtty.streamUntilDelimiter(pwriter, '\n', buf.len);
+        const p2 = fbs.getWritten();
+        if (!mem.eql(u8, p1, p2)) return error.PassphraseMismatch;
+    }
 
     try std.posix.tcsetattr(tty.handle, std.os.linux.TCSA.NOW, term_orig);
 
-    //TODO: confirm passphrase
-    return fbs.getWritten();
+    return p1;
 }
 
 const FileErrors = enum {

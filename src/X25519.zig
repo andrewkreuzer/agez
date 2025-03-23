@@ -15,7 +15,7 @@ pub const bech32_max_len = 90;
 const key_label = "age-encryption.org/v1/X25519";
 
 pub fn toStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
-    var buf = [_]u8{0} ** 97;
+    var buf: [97]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     const writer = fbs.writer();
 

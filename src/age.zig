@@ -131,8 +131,8 @@ pub fn ageEncrypt(
     // last byte is 0x01 for the last block and 0x00 for all other blocks
     var nonce = [_]u8{0x00} ** chacha_nonce_length;
 
-    var read_buffer = [_]u8{0} ** age_chunk_size;
-    var write_buffer = [_]u8{0} ** (age_chunk_size + chacha_tag_length);
+    var read_buffer: [age_chunk_size]u8 = undefined;
+    var write_buffer: [age_chunk_size + chacha_tag_length]u8 = undefined;
 
     // TODO: we'll assume no issues for now, GRND_RANDOM
     _ = std.os.linux.getrandom(&key_nonce, key_nonce.len, 0x0002);
@@ -203,8 +203,8 @@ pub fn ageDecrypt(
     // last byte is 0x01 for the last block and 0x00 for all other blocks
     var nonce = [_]u8{0x00} ** 12;
 
-    var read_buffer = [_]u8{0} ** (age_chunk_size + chacha_tag_length);
-    var write_buffer = [_]u8{0} ** age_chunk_size;
+    var read_buffer: [age_chunk_size + chacha_tag_length]u8 = undefined;
+    var write_buffer: [age_chunk_size]u8 = undefined;
 
     const key_nonce_read = try reader.readAll(&key_nonce);
     if (key_nonce_read != nonce_length) { return error.InvalidKeyNonce; }

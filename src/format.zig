@@ -24,6 +24,8 @@ const FormatError = error{
     NoIdentities,
     EmptyStanza,
     InvalidHeader,
+    InvalidWhitespace,
+    ScryptMultipleRecipients,
     // InvalidVersion,
     // UnsupportedVersion,
 };
@@ -36,6 +38,7 @@ pub fn AgeReader(
 
         r: Reader,
         armored_reader: ArmoredReaderType = undefined,
+        whitespace: bool = false,
 
         allocator: Allocator,
 
@@ -84,6 +87,7 @@ pub fn AgeReader(
             stanza,
             hmac,
             end,
+            whitespace,
             unknown,
 
             fn match(buf: []u8) Prefix {
@@ -111,8 +115,8 @@ pub fn AgeReader(
 
                 read: usize = 0,
                 line: usize = 0,
-                header: [MAX_HEADER_SIZE]u8 = [_]u8{0} ** MAX_HEADER_SIZE,
-                buf: [MAX_LINE_SIZE]u8 = [_]u8{0} ** MAX_LINE_SIZE,
+                header: [MAX_HEADER_SIZE]u8 = undefined,
+                buf: [MAX_LINE_SIZE]u8 = undefined,
 
                 const Line = struct {
                     prefix: Prefix = .unknown,
@@ -131,15 +135,19 @@ pub fn AgeReader(
                         error.EndOfStream => {
                             return .{ .prefix = .unknown, .bytes = fbs.getWritten(), };
                         },
-                        error.ArmorDecodeError, error.ArmorInvalidLineLength => return err,
+                        error.ArmorDecodeError,
+                        error.ArmorInvalidLineLength,
+                        error.ArmorInvalidLine
+                            => return err,
                         else => unreachable,
                     };
 
                     const line = fbs.getWritten();
+                    if (line.len < 1 or isWhiteSpace(line)) {
+                        return .{ .prefix = Prefix.whitespace, .bytes = line, };
+                    }
 
-                    // TODO: error on armor file with
-                    // wrong header
-                    if (armor.isArmorBegin(line)) {
+                    if (try armor.isArmorBegin(line)) {
                         return .{ .prefix = Prefix.armor_begin, .bytes = line, };
                     }
 
@@ -212,53 +220,45 @@ pub fn AgeReader(
 
             while (try iter.next()) |line| {
                 line: switch (line.prefix) {
+                    .whitespace => {
+                        self.whitespace = true;
+                        continue;
+                    },
                     .armor_begin => {
                         self.armored_reader = ArmoredReaderType{ .r = self.r.normal };
                         const areader = self.armored_reader.reader();
                         self.r = .{ .armored = areader };
                         iter.r = self.r;
                     },
-                    .version => age.version = Version.fromStr(line.bytes),
+                    .version => {
+                        if ( self.whitespace and std.meta.activeTag(self.r) != .armored) {
+                            return error.InvalidWhitespace;
+                        }
+                        age.version = Version.fromStr(line.bytes);
+                    },
                     .stanza => {
-                        const t, const args = blk: {
-                            var a = std.ArrayList([]u8).init(self.allocator);
-                            errdefer {
-                                for (a.items) |arg| self.allocator.free(arg);
-                                a.deinit();
+                        const stanza = line.bytes[3..];
+                        if (stanza.len == 0) return error.EmptyStanza;
+                        for (stanza) |c| try isValidAscii(c);
+
+                        var arg_iter = std.mem.splitScalar(u8, stanza, ' ');
+                        var args = std.ArrayList([]u8).init(self.allocator);
+                        errdefer for (args.items) |arg| self.allocator.free(arg);
+                        defer args.deinit();
+
+                        const t = arg_iter.first();
+                        const _type = try RecipientType.fromStanzaArg(t);
+                        for (age.recipients.items) |r| {
+                            if (r.type == .scrypt or _type == .scrypt) {
+                                return error.ScryptMultipleRecipients;
                             }
-                            const stanza = line.bytes[3..];
-                            if (stanza.len == 0) return error.EmptyStanza;
-
-                            var i: usize = 0;
-                            var j: usize = 0;
-                            while (j < stanza.len) {
-                                try Self.isValidAscii(stanza[j]);
-
-                                if (stanza[j] == ' ') {
-                                    const value = try self.allocator.dupe(u8, stanza[i .. j]);
-                                    errdefer self.allocator.free(value);
-                                    try a.append(value);
-                                    i = j + 1;
-                                }
-                                if (j == stanza.len - 1) {
-                                    const value = try self.allocator.dupe(u8, stanza[i .. j + 1]);
-                                    errdefer self.allocator.free(value);
-                                    try a.append(value);
-                                    i = j + 1;
-                                }
-                                j += 1;
-                            }
-
-                            break :blk .{a.swapRemove(0), try a.toOwnedSlice()};
-                        };
-                        errdefer {
-                            self.allocator.free(t);
-                            for (args) |arg| self.allocator.free(arg);
-                            self.allocator.free(args);
                         }
 
-                        const _type = try RecipientType.fromStanzaArg(t);
-                        self.allocator.free(t);
+                        while (true) {
+                            const arg = arg_iter.next();
+                            if (arg == null) break;
+                            try args.append(try self.allocator.dupe(u8, arg.?));
+                        }
 
                         const b = try iter.readUntilFalseOrEof(isStanzaBody);
                         const body = try self.allocator.alloc(u8, b.len);
@@ -267,12 +267,17 @@ pub fn AgeReader(
 
                         try age.recipients.append(.{
                             .type = _type,
-                            .args = args,
+                            .args = try args.toOwnedSlice(),
                             .body = body,
                         });
                     },
                     .hmac => {
                         const start = Prefix.hmac_prefix.len + 1; // space
+                        if (line.bytes.len <= start) return error.InvalidHeader;
+                        if (line.bytes[start] == ' ') return error.InvalidHeader;
+                        for (line.bytes) |b| {
+                            isValidAscii(b) catch return error.InvalidHmac;
+                        }
                         age.mac = try self.allocator.dupe(u8, line.bytes[start..]);
                         continue :line .end;
                     },
@@ -283,15 +288,22 @@ pub fn AgeReader(
                     },
                     else => return error.InvalidHeader,
                 }
-            } else return error.InvalidHeader;
+            } else unreachable;
         }
 
         // The valid subset of ascii for age strings is 33-126
         // but we include 32 (space) for convenience
-        fn isValidAscii(c: u8) FormatError!void {
+        inline fn isValidAscii(c: u8) FormatError!void {
             if (c < 32 or c > 126) {
                 return error.InvalidAscii;
             }
+        }
+
+        inline fn isWhiteSpace(line: []u8) bool {
+            for (line) |b| {
+                if (!std.ascii.isWhitespace(b)) return false;
+            }
+            return true;
         }
 
         // TODO: validate trailing bits
@@ -418,9 +430,9 @@ pub fn generate_hmac(
     fk: *const Key
 ) AllocatorError![]u8 {
     const salt = [_]u8{};
-    var buf_hmac_key = [_]u8{0} ** 32;
-    var buf_header_hmac = [_]u8{0} ** 32;
-    var buf_encode = [_]u8{0} ** 64;
+    var buf_hmac_key: [32]u8 = undefined;
+    var buf_header_hmac: [32]u8 = undefined;
+    var buf_encode: [64]u8 = undefined;
 
     const k = hkdf.extract(&salt, fk.key().bytes);
     hkdf.expand(&buf_hmac_key, "header", k);
@@ -618,8 +630,8 @@ test "scrypt recipient" {
     try t.expect(age.mac.?.len == 43);
 
     try t.expect(age.recipients.items[0].type == .scrypt);
-    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[0], "10"));
-    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[1], "rF0/NwblUHHTpgQgRpe5CQ"));
+    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[0], "rF0/NwblUHHTpgQgRpe5CQ"));
+    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[1], "10"));
     try t.expect(mem.eql(u8, age.recipients.items[0].body.?, "gUjEymFKMVXQEKdMMHL24oYexjE3TIC0O0zGSqJ2aUY"));
     try t.expect(mem.eql(u8, age.mac.?, "IOXiQYStkoT1mvZW2tFOqZdhRVvj58egABx/sWfZQbc"));
 }
@@ -650,8 +662,8 @@ test "ed25519 recipient" {
     try t.expect(age.mac.?.len == 43);
 
     try t.expect(age.recipients.items[0].type == .@"ssh-ed25519");
-    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[1], "xk+TSA"));
-    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[0], "xSh4cYHalYztTjXKULvJhGWIEp8gCSIQ/zx13jGzalw"));
+    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[0], "xk+TSA"));
+    try t.expect(mem.eql(u8, age.recipients.items[0].args.?[1], "xSh4cYHalYztTjXKULvJhGWIEp8gCSIQ/zx13jGzalw"));
     try t.expect(mem.eql(u8, age.recipients.items[0].body.?, "+Iil7T4RMV75FvQKvZD6gkjWsllUrW5SBHHxN2wMruw"));
     try t.expect(mem.eql(u8, age.mac.?, "NXKZrxXl5+8EmJG1lcx01IeOzm1k7nmlEJbJ6Dbymlg"));
 }
