@@ -23,10 +23,9 @@ pub const Age = struct {
         };
     }
 
-    pub fn verify_hmac(self: *Self, allocator: Allocator, fk: *const Key) !void {
-        const encoded = try generate_hmac(allocator, self.header.?, fk);
-        defer allocator.free(encoded);
-        if (!std.mem.eql(u8, self.mac.?, encoded)) {
+    pub fn verify_hmac(self: *Self, fk: *const Key) !void {
+        const encoded = generate_hmac(self.header.?, fk);
+        if (!std.mem.eql(u8, self.mac.?, &encoded)) {
             return error.InvalidHmac;
         }
     }

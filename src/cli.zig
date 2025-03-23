@@ -10,7 +10,7 @@ const Allocator = std.mem.Allocator;
 const Arg = struct {
     short: ?[]const u8 = null,
     long: ?[]const u8 = null,
-    arg: ?ArgType = null,
+    type: ?ArgType = null,
     description: ?[]const u8 = null,
 
     const ArgType = union(enum) {
@@ -21,7 +21,7 @@ const Arg = struct {
         none,
     };
 
-    fn init(short: []const u8, long: []const u8, description: []const u8) Arg {
+    fn init(short: ?[]const u8, long: ?[]const u8, description: ?[]const u8) Arg {
         comptime {
             return .{
                 .short = short,
@@ -33,9 +33,9 @@ const Arg = struct {
 
     fn set(self: *Arg, T: anytype) !void {
         switch(@TypeOf(T)) {
-            bool => self.arg = .{ .flag = T },
-            [:0]const u8 => self.arg = .{ .value = T },
-            [][:0]const u8 => self.arg = .{ .multivalue = T },
+            bool => self.type = .{ .flag = T },
+            [:0]const u8 => self.type = .{ .value = T },
+            [][:0]const u8 => self.type = .{ .multivalue = T },
             else => {
                 std.debug.print("Failed to set value: {any}\n", .{@TypeOf(T)});
                 return error.FailedSettingValue;
@@ -44,21 +44,21 @@ const Arg = struct {
     }
 
     pub fn flag(self: Arg) bool {
-        if (self.arg) |arg| switch (arg) {
+        if (self.type) |arg| switch (arg) {
             .flag => |b| return b,
             else => return false,
         } else return false;
     }
 
     pub fn value(self: Arg) ?[]const u8 {
-        if (self.arg) |arg| switch (arg) {
+        if (self.type) |arg| switch (arg) {
             .value, .positional => |v| return v,
             else => return null,
         } else return null;
     }
 
     pub fn values(self: Arg) ?[]const []const u8 {
-        if (self.arg) |arg| switch (arg) {
+        if (self.type) |arg| switch (arg) {
             .multivalue => |vs| return vs,
             else => return null,
         } else return null;
@@ -110,7 +110,7 @@ pub const Args = struct {
     recipient: Arg = Arg.init("-r", "--recipient", "Encrypt to a specified RECIPIENT. Can be repeated"),
     recipients_file: Arg = Arg.init("-R", "--recipients-file", "Encrypt to recipients listed at PATH. Can be repeated"),
     identity: Arg = Arg.init("-i", "--identity", "Use the identity file at PATH. Can be repeated"),
-    input: Arg = Arg.init("", "", ""),
+    input: Arg = Arg.init(null, null, null),
 
     allocator: ?Allocator = null,
 
@@ -156,7 +156,7 @@ pub const Args = struct {
                 try identity.append(id);
 
             } else if (arg.len > 0) {
-                self.input.arg = .{ .positional = arg };
+                self.input.type = .{ .positional = arg };
 
             } else {
                 std.debug.print("Invalid argument {s}\n", .{arg});
@@ -171,7 +171,7 @@ pub const Args = struct {
         if (
             !self.encrypt.flag()
             and !self.decrypt.flag()
-            and self.identity.arg.?.multivalue.len > 0
+            and self.identity.type.?.multivalue.len > 0
         ) {
             return error.IdRequiresEncryptDecrypt;
         }
@@ -183,10 +183,9 @@ pub const Args = struct {
     }
 
     pub fn printHelp(_: *Self, allocator: Allocator) !void {
-        const fields = @typeInfo(Self).@"struct".fields;
         const stdout = std.io.getStdOut().writer();
 
-        const header_text =
+        const header =
             \\agez - age encryption
             \\
             \\ Usage:
@@ -195,39 +194,58 @@ pub const Args = struct {
             \\    agez --decrypt [-i PATH]... [-o OUTPUT] [INPUT]
             ;
 
+        const arg_spacing = comptime blk: {
+            var max: usize = 0;
+            for (@typeInfo(Self).@"struct".fields) |field| {
+                if (field.type != Arg)  continue;
+                if (field.defaultValue()) |arg| {
+                    if (arg.long == null) continue;
+                    if (arg.long.?.len > max) max = arg.long.?.len;
+                }
+            }
+            break :blk max;
+        };
+
         // this is completely unnecessary, but I wanted to try it out
-        // TODO: figure out the spacing for descriptions
+        const fields = @typeInfo(Self).@"struct".fields;
         var options = try std.ArrayList(u8).initCapacity(allocator, fields.len);
         const writer = options.writer();
         inline for (fields) |field| {
+            if (field.type != Arg)  continue;
             if (field.defaultValue()) |arg| {
-                if (field.type != Arg) { continue; }
-                if (arg.arg) |a| switch (a) {
-                    .positional => continue,
-                    else => try std.fmt.format(writer, "    {s}, {s}    {s}\n", .{arg.short.?, arg.long.?, arg.description.?}),
-                };
+                if (arg.short == null or arg.long == null) continue;
+                const spacing = arg_spacing - arg.long.?.len + 2;
+                try std.fmt.format(writer, "    {s}, {s}{s}{s}\n",
+                    .{
+                        arg.short.?,
+                        arg.long.?,
+                        " " ** spacing,
+                        arg.description.?
+                    }
+                );
             }
         }
 
         const options_text = try options.toOwnedSlice();
         defer allocator.free(options_text);
 
+        // TOOD: footer
         try std.fmt.format(stdout,
             \\{s}
             \\
             \\Options:
             \\{s}
-            , .{header_text, options_text});
+            , .{header, options_text});
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.recipient.arg) |recipient| {
+        if (self.recipient.type) |recipient| {
             self.allocator.?.free(recipient.multivalue);
         }
-        if (self.recipients_file.arg) |recipients_file| {
+        if (self.recipients_file.type) |recipients_file| {
             self.allocator.?.free(recipients_file.multivalue);
         }
-        if (self.identity.arg) |identity| {
+        if (self.identity.type) |identity| {
             self.allocator.?.free(identity.multivalue);
         }
     }
@@ -242,14 +260,14 @@ test "arguments" {
         expected: Args,
     }{
         .{ .args = "--encrypt", .expected = .{
-            .encrypt = .{ .arg = .{ .flag = true, } },
+            .encrypt = .{ .type = .{ .flag = true, } },
         }},
         .{ .args = "--decrypt", .expected = .{
-            .decrypt = .{ .arg = .{ .flag = true, } },
+            .decrypt = .{ .type = .{ .flag = true, } },
         }},
         .{ .args = "--decrypt -i f", .expected = .{
-            .decrypt = .{ .arg = .{ .flag = true, } },
-            .identity = .{ .arg = .{ .value = "f", } },
+            .decrypt = .{ .type = .{ .flag = true, } },
+            .identity = .{ .type = .{ .value = "f", } },
         }},
     };
 

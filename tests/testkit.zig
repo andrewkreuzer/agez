@@ -148,11 +148,7 @@ test "all" {
             // expect: HMAC failure
             error.InvalidHmac
                 => {
-                    if (mem.eql(u8, entry.?.name, "hmac_truncated")) continue;
                     if (mem.eql(u8, entry.?.name, "hmac_not_canonical")) continue;
-                    if (mem.eql(u8, entry.?.name, "hmac_trailing_space")) continue;
-                    if (mem.eql(u8, entry.?.name, "hmac_no_space")) continue;
-                    if (mem.eql(u8, entry.?.name, "hmac_garbage")) continue;
                     try t.expectEqualStrings(testkit.expect, "HMAC failure");
                 },
             // expect: armor failure
@@ -182,6 +178,9 @@ test "all" {
             error.InvalidCharacter,
             error.ScryptMultipleRecipients,
                 => {
+                    // we only support a known list of recipient types
+                    // so if it's unknown we return invalid recipient
+                    // type instead of a no match
                     if (
                         mem.eql(u8, entry.?.name, "x25519_lowercase")
                         and err == error.InvalidRecipientType
@@ -190,6 +189,10 @@ test "all" {
                         mem.eql(u8, entry.?.name, "scrypt_uppercase")
                         and err == error.InvalidRecipientType
                     ) continue;
+                    // we don't start the armored reader until we hit the
+                    // armor begin marker, so in this case we return invalid
+                    // header instead of armor failure. Whitespace is allowed
+                    // but it must be followed by an armor begin marker
                     if (
                         mem.eql(u8, entry.?.name, "armor_garbage_leading")
                         and err == error.InvalidHeader
@@ -202,10 +205,15 @@ test "all" {
             error.AgeDecryptFailure,
             error.WeakParameters
                 => {
+                    // I'm not sure why this is considered a header failure
+                    // we fail when trying to read the nonce bytes in the payload
+                    // returning InvalidKeyNonce as the payload is completely empty
                     if (
                         mem.eql(u8, entry.?.name, "stream_no_nonce")
                         and err == error.InvalidKeyNonce
                     ) continue;
+                    // same as above I would assume this is a payload failure
+                    // we're done reading the header
                     if (
                         mem.eql(u8, entry.?.name, "stream_short_nonce")
                         and err == error.InvalidKeyNonce

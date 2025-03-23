@@ -26,8 +26,7 @@ const FormatError = error{
     InvalidHeader,
     InvalidWhitespace,
     ScryptMultipleRecipients,
-    // InvalidVersion,
-    // UnsupportedVersion,
+    HmacGenerationError,
 };
 
 pub fn AgeReader(
@@ -136,8 +135,8 @@ pub fn AgeReader(
                             return .{ .prefix = .unknown, .bytes = fbs.getWritten(), };
                         },
                         error.ArmorDecodeError,
-                        error.ArmorInvalidLineLength,
-                        error.ArmorInvalidLine
+                        error.ArmorInvalidLine,
+                        error.ArmorInvalidLineLength
                             => return err,
                         else => unreachable,
                     };
@@ -231,7 +230,7 @@ pub fn AgeReader(
                         iter.r = self.r;
                     },
                     .version => {
-                        if ( self.whitespace and std.meta.activeTag(self.r) != .armored) {
+                        if (self.whitespace and std.meta.activeTag(self.r) != .armored) {
                             return error.InvalidWhitespace;
                         }
                         age.version = Version.fromStr(line.bytes);
@@ -274,9 +273,10 @@ pub fn AgeReader(
                     .hmac => {
                         const start = Prefix.hmac_prefix.len + 1; // space
                         if (line.bytes.len <= start) return error.InvalidHeader;
+                        if (line.bytes[start..].len != 43) return error.InvalidHeader;
                         if (line.bytes[start] == ' ') return error.InvalidHeader;
-                        for (line.bytes) |b| {
-                            isValidAscii(b) catch return error.InvalidHmac;
+                        for (line.bytes[start..]) |b| {
+                            isValidAscii(b) catch return error.InvalidHeader;
                         }
                         age.mac = try self.allocator.dupe(u8, line.bytes[start..]);
                         continue :line .end;
@@ -377,8 +377,7 @@ pub fn AgeWriter(comptime WriterType: type) type {
             ,.{age.version.?.toString(),recip.items});
             defer self.allocator.free(header);
 
-            const mac = try generate_hmac(
-                self.allocator,
+            const mac = generate_hmac(
                 header,
                 fk,
             );
@@ -386,7 +385,7 @@ pub fn AgeWriter(comptime WriterType: type) type {
             try self.switchWriterIfNeeded();
             _ = try self.w.write(header);
             _ = try self.w.write(" ");
-            _ = try self.w.write(mac);
+            _ = try self.w.write(&mac);
             _ = try self.w.write("\n");
         }
 
@@ -425,24 +424,23 @@ pub fn AgeWriter(comptime WriterType: type) type {
 }
 
 pub fn generate_hmac(
-    allocator: Allocator,
     header: []const u8,
     fk: *const Key
-) AllocatorError![]u8 {
+) [43]u8 {
     const salt = [_]u8{};
-    var buf_hmac_key: [32]u8 = undefined;
-    var buf_header_hmac: [32]u8 = undefined;
+    var buf_key: [32]u8 = undefined;
+    var buf_hmac: [32]u8 = undefined;
     var buf_encode: [64]u8 = undefined;
 
     const k = hkdf.extract(&salt, fk.key().bytes);
-    hkdf.expand(&buf_hmac_key, "header", k);
-    hmac.create(&buf_header_hmac, header, &buf_hmac_key);
+    hkdf.expand(&buf_key, "header", k);
+    hmac.create(&buf_hmac, header, &buf_key);
 
     const Encoder = std.base64.standard_no_pad.Encoder;
-    const hmac_padded_len = Encoder.calcSize(buf_header_hmac.len);
-    const encoded = Encoder.encode(buf_encode[0..hmac_padded_len], &buf_header_hmac);
+    _ = Encoder.calcSize(buf_hmac.len);
+    const encoded = Encoder.encode(&buf_encode, &buf_hmac);
 
-    return allocator.dupe(u8, encoded);
+    return encoded[0..43].*;
 }
 
 test "age file" {
@@ -490,7 +488,7 @@ test "age file" {
     try t.expect(age.recipients.items[0].state == .unwrapped);
 
     try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
-    try age.verify_hmac(allocator, &file_key);
+    try age.verify_hmac(&file_key);
 
 
     var identity_buf: [90]u8 = undefined;
@@ -550,7 +548,7 @@ test "armored age file" {
     try t.expect(age.recipients.items[0].state == .unwrapped);
 
     try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
-    try age.verify_hmac(allocator, &file_key);
+    try age.verify_hmac(&file_key);
 
 
     var identity_buf: [90]u8 = undefined;

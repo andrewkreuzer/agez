@@ -61,7 +61,7 @@ pub fn decrypt(
     } else return error.NoIdentityMatch;
     defer file_key.deinit(allocator);
 
-    try age.verify_hmac(allocator, &file_key);
+    try age.verify_hmac(&file_key);
 
     _ = try ageDecrypt(&file_key, age_reader.r, writer);
 }
