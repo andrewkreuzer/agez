@@ -56,17 +56,20 @@ pub fn main() !void {
             const r = try Recipient.fromSshPublicKey(allocator, pk, file_key);
             try recipients.append(r);
         } else if (mem.eql(u8, prefix, "age1")) {
-            var fbs = std.io.fixedBufferStream(&buf);
-            const writer = fbs.writer();
+            var fbs = std.io.fixedBufferStream(buf[0..n]);
+            const r = fbs.reader();
+            var line_buf: [90]u8 = undefined;
+            var line_fbs = std.io.fixedBufferStream(&line_buf);
+            const writer = line_fbs.writer();
             while (true) {
-                reader.streamUntilDelimiter(writer, '\n', buf.len) catch |err| switch (err) {
+                r.streamUntilDelimiter(writer, '\n', line_buf.len) catch |err| switch (err) {
                     error.EndOfStream => break,
                     else => return err,
                 };
-                const line = fbs.getWritten();
+                const line = line_fbs.getWritten();
                 const recipient = try Recipient.fromAgePublicKey(allocator, line, file_key);
                 try recipients.append(recipient);
-                try fbs.seekTo(0);
+                try line_fbs.seekTo(0);
             }
         } else {
             std.debug.print("Unrecognized recipient file format: {s}\n", .{file_name});
