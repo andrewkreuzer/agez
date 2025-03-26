@@ -30,12 +30,16 @@ pub const Age = struct {
         }
     }
 
-    pub fn unwrap(self: *Self, allocator: Allocator, identity: Key) !Key {
+    pub fn unwrap(self: *Self, allocator: Allocator, identities: []Key) !Key {
         for (self.recipients.items) |*r| {
-            return r.unwrap(allocator, identity) catch |err| switch (err) {
-                error.AuthenticationFailed => continue,
-                else => return err,
-            };
+            for (identities) |identity| {
+                return r.unwrap(allocator, identity) catch |err| switch (err) {
+                    error.IncompatibleKey,
+                    error.AuthenticationFailed
+                        => continue,
+                    else => return err,
+                };
+            }
         }
         return error.AuthenticationFailed;
     }

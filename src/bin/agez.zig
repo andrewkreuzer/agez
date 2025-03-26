@@ -11,6 +11,7 @@ const Key = lib.Key;
 const SshParser = lib.ssh.Parser;
 const PemDecoder = lib.ssh.PemDecoder;
 const Recipient = lib.Recipient;
+const X25519 = lib.X25519;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -91,7 +92,7 @@ pub fn main() !void {
             if (args.identity.values()) |files| {
                 var ids = ArrayList(Key).init(allocator);
                 for (files) |file_name| {
-                    var identity_buf: [90]u8 = undefined;
+                    var identity_buf: [256]u8 = undefined;
                     defer std.crypto.utils.secureZero(u8, &identity_buf);
                     const line = try Io.readFirstLine(&identity_buf, file_name);
                     const prefix = line[0..14];
@@ -106,12 +107,17 @@ pub fn main() !void {
                         try ids.append(key);
                         const r = try Recipient.fromSshKey(allocator, key, file_key);
                         try recipients.append(r);
-                    } else {
+                    } else if (
+                        mem.eql(u8, prefix, X25519.bech32_hrp_private[0..14])
+                    ) {
                         const key = try Key.init(allocator, line);
                         try ids.append(key);
 
                         const r = try Recipient.fromAgePrivateKey(allocator, line, file_key);
                         try recipients.append(r);
+                    } else {
+                        std.debug.print("Unrecognized identity file format: {s}\n", .{file_name});
+                        exit(1);
                     }
                 }
                 break :blk try ids.toOwnedSlice();

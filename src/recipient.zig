@@ -1,5 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const meta = std.meta;
 const io = std.io;
 const Allocator = std.mem.Allocator;
 
@@ -83,6 +84,10 @@ pub const Recipient = struct {
     /// it is the callers responsibility to ensure safety
     /// and deallocation of the decrypted file key
     pub fn unwrap(self: *Self, allocator: Allocator, identity: Key) !Key {
+        const itype = meta.activeTag(identity);
+        if (self.type == .@"ssh-rsa" and itype != .rsa) return error.IncompatibleKey;
+        if (self.type == .@"ssh-ed25519" and itype != .ed25519) return error.IncompatibleKey;
+
         self.state = .unwrapped;
         return switch (self.type) {
             .X25519 => try X25519.unwrap(allocator, identity.key().bytes, self.args.?, self.body.?),
@@ -122,6 +127,7 @@ const RecipientErrors = error{
     InvalidRecipient,
     InvalidRecipientType,
     FromKeyNotSupported,
+    IncompatibleKey,
 };
 
 test "X25519 recipient" {
@@ -278,5 +284,37 @@ test "rsa recipient" {
     try t.expect(recipient.state == .wrapped);
 
     file_key.deinit(allocator);
+    recipient.deinit(allocator);
+}
+
+test "id recipient mismatch" {
+    const SshParser = @import("ssh/lib.zig").Parser;
+    const t = std.testing;
+    const allocator = std.testing.allocator;
+
+    var private_key =
+        \\-----BEGIN OPENSSH PRIVATE KEY-----
+        \\b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+        \\QyNTUxOQAAACDbG0rq7DpgTElpxU1kFWBYUm2vTut2QtLziCXnc3+qVgAAAJitCiUbrQol
+        \\GwAAAAtzc2gtZWQyNTUxOQAAACDbG0rq7DpgTElpxU1kFWBYUm2vTut2QtLziCXnc3+qVg
+        \\AAAEB1ovrGH8VhrZsp5G0UsHDrXjysoYiD4GhnPuIuuoUoidsbSursOmBMSWnFTWQVYFhS
+        \\ba9O63ZC0vOIJedzf6pWAAAAEWFrcmV1emVyQGNhcm5haGFuAQIDBA==
+        \\-----END OPENSSH PRIVATE KEY-----
+        .*
+    ;
+    const id: Key = try SshParser.parseOpenSshPrivateKey(&private_key);
+    var recipient: Recipient = .{
+        .type = .@"ssh-rsa",
+        .args = try allocator.alloc([]u8, 1),
+        .body = try allocator.dupe(u8, 
+            \\AmzFOlub++Nsaxhme3ynSwrSjYZwYIyt91m2+CXZnkOGDMurW8vVyERWQZRQxB5j
+            \\c9KVBe+MhHGt8zMjhytnjepioA4bCJgnxLUKU4u8WzH68TbCFb5wcoiNkTVOejyy
+            \\NGV+DSwX6vBCzxsaswpYFbhG0X6wzYweUqJgvovYW/k
+        ),
+    };
+    recipient.args.?[0] = try allocator.dupe(u8, "UI4tAQ");
+
+    try t.expectError(error.IncompatibleKey, recipient.unwrap(allocator, id));
+
     recipient.deinit(allocator);
 }

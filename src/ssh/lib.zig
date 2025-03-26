@@ -56,12 +56,16 @@ pub const PemDecoder = struct {
             line_fbs.reset();
 
             if (line.len == 0) break;
-            if (mem.eql(u8, line[0..header.len], header)) {
-                //TODO: parse header for keytype
-                continue;
+            if (line.len > header.len) {
+                if (mem.eql(u8, line[0..header.len], header)) {
+                    //TODO: parse header for keytype
+                    continue;
+                }
             }
-            if (mem.eql(u8, line[0..footer.len], footer)) {
-                continue;
+            if (line.len > footer.len) {
+                if (mem.eql(u8, line[0..footer.len], footer)) {
+                    break;
+                }
             }
 
             @memcpy(self.buf[self.end..self.end+line.len], line);

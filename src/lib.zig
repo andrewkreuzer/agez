@@ -52,12 +52,7 @@ pub fn decrypt(
     var age = try age_reader.read();
     defer age.deinit(allocator);
 
-    const file_key: Key = for (identities) |id| {
-        break age.unwrap(allocator, id) catch |err| switch (err) {
-            error.AuthenticationFailed => continue,
-            else => return err,
-        };
-    } else return error.NoIdentityMatch;
+    const file_key: Key = try age.unwrap(allocator, identities);
     defer file_key.deinit(allocator);
 
     try age.verify_hmac(&file_key);

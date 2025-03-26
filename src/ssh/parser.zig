@@ -153,21 +153,24 @@ const Kdf = struct {
 };
 
 fn decryptPrivateKey(out: []u8, enc_pk: EncryptedPrivateKeySpec) !void {
+    var pass_buf: [256]u8 = undefined;
+    const passphrase = try Io.read_passphrase(&pass_buf, false);
+
     const kdf = try parseIntoStruct(Kdf, enc_pk.kdf.?);
     if (mem.eql(u8, enc_pk.ciphername, "aes256-ctr")) {
-        try decryptAes256Ctr(kdf, enc_pk.private_key, out[0..enc_pk.private_key.len]);
+        try decryptAes256Ctr(enc_pk.private_key, out[0..enc_pk.private_key.len], passphrase, kdf);
     }
 }
 
-fn decryptAes256Ctr(kdf: Kdf, in: []u8, out: []u8) !void {
-    var key: [48]u8 = undefined;
-    var pass_buf: [256]u8 = undefined;
+fn decryptAes256Ctr(c: []u8, m: []u8, passphrase: []u8, kdf: Kdf) !void {
+    var keyiv: [48]u8 = undefined;
+    try std.crypto.pwhash.bcrypt.opensshKdf(passphrase, kdf.salt, &keyiv, kdf.rounds);
 
-    const passphrase = try Io.read_passphrase(&pass_buf, false);
-    try std.crypto.pwhash.bcrypt.opensshKdf(passphrase, kdf.salt, &key, kdf.rounds);
+    const key = keyiv[0..32].*;
+    const iv = keyiv[32..].*;
 
-    const aes256 = Aes256.initEnc(key[0..32].*);
-    modes.ctr(@TypeOf(aes256), aes256, out, in, key[32..].*, .big);
+    const aes256 = Aes256.initEnc(key);
+    modes.ctr(@TypeOf(aes256), aes256, m, c, iv, .big);
 }
 
 fn parseIntoStruct(T: type, data: []u8) !T {
