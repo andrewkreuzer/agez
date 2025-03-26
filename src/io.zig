@@ -64,10 +64,13 @@ pub fn readFirstLine(buf: []u8, file_name: []const u8) ![]u8 {
     const file = try fs.cwd().openFile(file_name, .{});
     defer file.close();
     var buf_reader = std.io.bufferedReader(file.reader());
-    if (try buf_reader.reader().readUntilDelimiterOrEof(buf, '\n')) |r| {
-        return r;
-    } else {
-        return error.EmptyFile;
+    while (true) {
+        if (try buf_reader.reader().readUntilDelimiterOrEof(buf, '\n')) |r| {
+            if (r[0] == '#') continue;
+            return r;
+        } else {
+            return error.EmptyFile;
+        }
     }
 }
 

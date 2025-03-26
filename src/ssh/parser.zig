@@ -1,10 +1,67 @@
 const std = @import("std");
 const mem = std.mem;
+const modes = std.crypto.core.modes;
+const Aes256 = std.crypto.core.aes.Aes256;
 const Ed25519 = std.crypto.sign.Ed25519;
 
+const ssh = @import("../ssh.zig");
 const Rsa = @import("rsa.zig");
+const Io = @import("../io.zig");
 const Key = @import("../key.zig").Key;
 const PemDecoder = @import("lib.zig").PemDecoder;
+
+const PublicKeySpec = struct {
+    key_type: []u8,
+    rest_public_key: []u8,
+};
+
+const SshRsaPublicKey = struct {
+    e: []u8,
+    n: []u8,
+    rest_padding: []u8,
+};
+
+const SshEd25519PublicKey = struct {
+    public_key: []u8,
+    rest_padding: []u8,
+};
+
+pub fn parseOpenSshPublicKey(
+    data: []u8
+) !ssh.PublicKey {
+    var buf: [256]u8 = undefined;
+
+    var iter = std.mem.splitScalar(u8, data, ' ');
+    const key_type = iter.first();
+    const key_data = iter.next();
+    const comment = iter.rest();
+
+    _ = comment;
+
+    if (key_data == null) return error.InvalidSshKey;
+
+    const Decoder = std.base64.standard.Decoder;
+    const n = try Decoder.calcSizeForSlice(key_data.?);
+    try Decoder.decode(buf[0..n], key_data.?);
+
+    const pk_spec = try parseIntoStruct(PublicKeySpec, buf[0..n]);
+    if (!mem.eql(u8, pk_spec.key_type, key_type)) return error.InvalidSshKey;
+
+    if (mem.eql(u8, pk_spec.key_type, "ssh-ed25519")) {
+        const k = try parseIntoStruct(SshEd25519PublicKey, pk_spec.rest_public_key);
+        const public_key = try Ed25519.PublicKey.fromBytes(k.public_key[0..32].*);
+        return .{ .ed25519 = public_key };
+    } else if (mem.eql(u8, pk_spec.key_type, "ssh-rsa")) {
+        const k = try parseIntoStruct(SshRsaPublicKey, pk_spec.rest_public_key);
+        const public_key = try Rsa.PublicKey.fromParts(k.n, k.e);
+        return .{ .rsa = public_key };
+    } else {
+        return error.UnsupportedSshKey;
+    }
+
+    const key: Key = .{ .slice = .{ .k = buf[0..n] } };
+    return key;
+}
 
 const EncryptedPrivateKeySpec = struct {
     ciphername: []u8,
@@ -57,12 +114,18 @@ pub fn parseOpenSshPrivateKey(data: []u8) !Key {
         return error.InvalidKeyCount;
     }
 
-    // TODO: decrypt the private key if needed
+    const pk1 = blk: {
+        if (!mem.eql(u8, enc_pk.ciphername, "none")) {
+            var buf: [PemDecoder.max_key_size]u8 = undefined;
+            try decryptPrivateKey(&buf, enc_pk);
+            break :blk try parseIntoStruct(SshPrivateKeySpec, &buf);
+        } else {
+            break :blk try parseIntoStruct(SshPrivateKeySpec, enc_pk.private_key);
+        }
+    };
+    if (pk1.check1 != pk1.check2) return error.InvalidSshKey;
 
-    const pk1 = try parseIntoStruct(SshPrivateKeySpec, enc_pk.private_key);
-    if (pk1.check1 != pk1.check2) {
-        return error.InvalidSshKey;
-    }
+
 
     if (mem.eql(u8, pk1.key_type, "ssh-ed25519")) {
         const k = try parseIntoStruct(SshEd25519PrivateKey, pk1.rest_key_data);
@@ -74,6 +137,7 @@ pub fn parseOpenSshPrivateKey(data: []u8) !Key {
         var secret_key = try Rsa.SecretKey.fromParts(k.n, k.e, k.d, k.p, k.q);
         if (!try secret_key.validate()) return error.InvalidSshKey;
         try secret_key.precompute();
+
         const key_pair = try Rsa.KeyPair.fromPrivateKey(secret_key);
         return .{ .rsa = key_pair };
     }else {
@@ -81,6 +145,29 @@ pub fn parseOpenSshPrivateKey(data: []u8) !Key {
     }
 
     return .unsupported;
+}
+
+const Kdf = struct {
+    salt: []u8,
+    rounds: u32,
+};
+
+fn decryptPrivateKey(out: []u8, enc_pk: EncryptedPrivateKeySpec) !void {
+    const kdf = try parseIntoStruct(Kdf, enc_pk.kdf.?);
+    if (mem.eql(u8, enc_pk.ciphername, "aes256-ctr")) {
+        try decryptAes256Ctr(kdf, enc_pk.private_key, out[0..enc_pk.private_key.len]);
+    }
+}
+
+fn decryptAes256Ctr(kdf: Kdf, in: []u8, out: []u8) !void {
+    var key: [48]u8 = undefined;
+    var pass_buf: [256]u8 = undefined;
+
+    const passphrase = try Io.read_passphrase(&pass_buf, false);
+    try std.crypto.pwhash.bcrypt.opensshKdf(passphrase, kdf.salt, &key, kdf.rounds);
+
+    const aes256 = Aes256.initEnc(key[0..32].*);
+    modes.ctr(@TypeOf(aes256), aes256, out, in, key[32..].*, .big);
 }
 
 fn parseIntoStruct(T: type, data: []u8) !T {

@@ -4,6 +4,7 @@ const mem = std.mem;
 const hkdf = std.crypto.kdf.hkdf.HkdfSha256;
 const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 const X25519 = std.crypto.dh.X25519;
+const Ed25519 = std.crypto.sign.Ed25519;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Sha512 = std.crypto.hash.sha2.Sha512;
@@ -20,6 +21,11 @@ pub const ed25519_stanza_arg = "ssh-ed25519";
 pub const rsa_stanza_arg = "ssh-rsa";
 const ed25519_key_label = "age-encryption.org/v1/ssh-ed25519";
 const rsa_key_label = "age-encryption.org/v1/ssh-rsa";
+
+pub const PublicKey = union(enum) {
+    ed25519: Ed25519.PublicKey,
+    rsa: Rsa.PublicKey,
+};
 
 pub const rsa = struct {
     pub fn toStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
@@ -40,7 +46,31 @@ pub const rsa = struct {
     }
 
     pub fn unwrap(allocator: Allocator, private_key: Rsa.SecretKey, args: [][]u8, body: []u8) !Key {
-        _ = args;
+        const Encoder = std.base64.standard_no_pad.Encoder;
+
+        var public_key = private_key.publicKey();
+        const size_of_e = 3;
+        const size = @sizeOf(u32) + public_key.size() + size_of_e + 16;
+        const ssh_key = try allocator.alloc(u8, size);
+        defer allocator.free(ssh_key);
+
+        var pk = public_key;
+        var i = pk.e.v.limbs_len - 1;
+        while (i > 0 and pk.e.v.limbs_buffer[i] == 0) : (i -= 1) {}
+        pk.e.v.limbs_len = i + 1;
+        std.debug.assert(pk.e.v.limbs_len <= pk.e.v.limbs_buffer.len);
+
+        try Parser.rsaSshFormat(ssh_key, pk);
+
+        var ssh_key_hash: [Sha256.digest_length]u8 = undefined;
+        Sha256.hash(ssh_key, &ssh_key_hash, .{});
+
+        var ssh_tag_b64: [6]u8 = undefined;
+        _ = Encoder.encode(&ssh_tag_b64, ssh_key_hash[0..4]);
+
+        if (!mem.eql(u8, &ssh_tag_b64, args[0])) {
+            return error.InvalidSshFingerprint;
+        }
 
         var Decoder = PemDecoder{};
         var out_buf: [PemDecoder.max_key_size]u8 = undefined;
@@ -50,6 +80,7 @@ pub const rsa = struct {
             .slice = .{ .k = try allocator.alloc(u8, 16) }
         };
         try private_key.decryptOaep(file_key.slice.k, b, rsa_key_label);
+
 
         return file_key;
     }
@@ -68,11 +99,9 @@ pub const rsa = struct {
         defer body.deinit();
         var iter = std.mem.window(u8, encoded, 64, 64);
         var short = false;
-        while (true) {
-            const line = iter.next();
-            if (line == null) break;
-            if (line.?.len < 64) short = true;
-            try body.append(line.?);
+        while (iter.next()) |line | {
+            if (line.len < 64) short = true;
+            try body.append(line);
         }
         if (!short) try body.append("");
         const b_slice = try body.toOwnedSlice();

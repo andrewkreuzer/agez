@@ -68,8 +68,8 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
                 if (mem.indexOf(u8, slice, armor_end_marker)) |start| {
                     var s = start;
                     if (s == 0) return 0;
-                    if (s > 0 and slice[s-1] == '\n') s -= 1;
-                    if (s > 0 and slice[s-1] == '\r') s -= 1;
+                    if (slice[s-1] == '\n') s -= 1;
+                    if (slice[s-1] == '\r') s -= 1;
                     slice = slice[0..s];
                 } else return error.ArmorNoEndMarker;
 

@@ -11,7 +11,7 @@ const Fe = Modulus.Fe;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 const max_bits: u32 = 4096;
-const MaxPrim = u5120; // TODO: to big
+const MaxPrim = u5120;
                        //
 pub const KeyPair = struct {
     public_key: PublicKey,
@@ -123,6 +123,7 @@ pub const SecretKey = struct {
         if (!self.n.mul(self.p, self.q).eql(self.n.zero)) {
             return false;
         }
+
         // TOOD: bytes please
         const de, const overflow = @mulWithOverflow(
             try self.d.toPrimitive(MaxPrim),
@@ -180,10 +181,8 @@ pub const SecretKey = struct {
     }
 
     pub fn encrypt(self: *const SecretKey, c: []u8, m: []u8) !usize {
-        const _m_uint = try Fe.fromBytes(self.n, m, .big);
-        const _m = try self.n.pow(_m_uint, self.e);
-        try _m.toBytes(c, .big);
-        return (self.n.bits() + 7) / 8;
+        const pk = self.publicKey();
+        pk.encrypt(c, m);
     }
 
     fn select(v: usize, x: usize, y: usize) usize { return ~(v-%1)&x | (v-%1)&y; }
@@ -252,6 +251,7 @@ pub const SecretKey = struct {
         const _m = self.n.add(m2, hq);
 
         try _m.toBytes(m, .big);
+
         return (self.n.bits() + 7) / 8;
     }
 
@@ -286,3 +286,80 @@ const RsaErrors = error{
     InvalidOaepPadding,
     Overflow,
 };
+
+fn test_key() !SecretKey {
+    var n = [_]u8{
+          0, 191, 196, 250, 169, 243, 223, 187,  14, 190, 125, 126, 159, 255, 181, 36,
+          7, 114,  57,   3, 229,  86,  41, 251,  74,  93, 191, 200,  93, 212, 253, 96,
+        117, 208, 230,   1, 229, 233,  28,  66, 122, 169, 203,  78,  77, 237, 134, 240,
+         74, 195, 115, 136, 255, 159,  14, 145,  16, 210, 206, 136,  52, 209,  42, 131,
+         98, 192, 167, 168,  55, 178, 124, 134, 178, 171,  92,  51, 135,  43,  32, 248,
+        126, 162, 221, 130, 249, 115,  18, 194,  67, 125, 250,   1,  87, 215, 172, 230,
+        109,  11,  53, 101, 223, 117, 168, 119, 150, 220,   8, 134,  10, 251, 202,  95,
+        107,  18, 234, 161,  90, 194,  71, 161, 156, 114,  84, 133, 159, 187,  26, 132,
+        171
+    };
+    var e = [_]u8{1, 0, 1};
+    var d = [_]u8{
+          0, 168, 117, 190, 137,  59, 141, 199, 129, 253,  62, 186, 212, 140, 201, 176,
+         91, 198,  48, 101, 198, 185, 249, 105,  33, 123, 215, 116, 137,  81,   8,  64,
+         11,  95,  54,  30, 102, 188, 111, 177, 202, 149, 139, 222,  62, 192, 176, 240,
+         55, 141,  24, 218,  57,  75, 157, 125,  59, 221,  35, 199,  45,  54, 173, 116,
+        249, 234, 241, 156,  63, 187,  71, 233, 141, 116, 252, 105,  28,  65,  33, 147,
+         65, 191, 213,  61, 122, 152, 129, 135,  22, 244, 121,  84,  14,  43,  44, 241,
+         25, 163, 223, 133, 200, 145,  83, 252, 106, 222, 146,  85, 221, 217, 155,   3,
+        182, 226,  13,  54,  54, 146,  99,  35, 100, 110,  65, 227, 157,  51, 132, 225,
+        185
+    };
+    var p = [_]u8{
+          0, 255, 103, 102, 104, 72, 239, 199, 148,  50, 225, 136, 172,  12, 184, 254,
+          9, 252, 213,   9, 219,  8, 198, 181, 145,  42, 124, 117,  46, 118, 185,  25,
+        148, 209,  90,  79, 199, 131,  95,  61, 138, 180, 61,  67, 177,  92, 178, 245,
+        203, 197,  50,  76, 155,  44, 225, 197, 133, 201, 229, 128, 40,  87, 221, 101,
+        253
+    };
+    var q = [_]u8{
+          0, 192,  55, 142, 249, 246, 246, 252, 201, 214, 197, 140, 147,  84, 152,  29,
+        205,   7, 203,  33,  54, 139,   1, 158,  77,  19, 188, 176,  36,  89,  54, 241,
+        161,  35, 254, 196, 156, 179, 160,  24,   5, 168, 172, 253,  24, 187, 188, 210,
+        198,   1,  13, 234,  73, 110, 187,  23,  28, 122, 239,  13,   3,  16, 247,  65,
+        199
+    };
+
+    var sk = try SecretKey.fromParts(&n, &e, &d, &p, &q);
+    if (!try sk.validate()) try std.testing.expect(false);
+    sk.precompute() catch |err| {
+        std.debug.print("error: {}\n", .{err});
+        try std.testing.expect(false);
+    };
+
+    return sk;
+}
+
+test "round trip" {
+    const secret_key = try test_key();
+    const public_key = secret_key.publicKey();
+
+    const message = "test";
+    var c: [128]u8 = undefined;
+    _ = try public_key.encrypt(&c, message);
+
+    var m: [128]u8 = undefined;
+    _ = try secret_key.decrypt(&m, &c);
+
+    try std.testing.expectEqualStrings(message, m[m.len-message.len..]);
+}
+
+test "round trip oaep" {
+    const secret_key = try test_key();
+    const public_key = secret_key.publicKey();
+
+    const message = "test";
+    var c: [128]u8 = undefined;
+    _ = try public_key.encryptOaep(&c, message, "test");
+
+    var m: [4]u8 = undefined;
+    _ = try secret_key.decryptOaep(&m, &c, "test");
+
+    try std.testing.expectEqualStrings(message, m[m.len-message.len..]);
+}

@@ -2,6 +2,7 @@ const std = @import("std");
 const mem = std.mem;
 const exit = std.posix.exit;
 const ArrayList = std.ArrayList;
+const File = std.fs.File;
 
 const lib = @import("lib");
 const cli = lib.cli;
@@ -41,21 +42,34 @@ pub fn main() !void {
         try recipients.append(r);
     };
     if (args.recipients_file.values()) |files| for (files) |file_name| {
-        const f = try Io.openFile(file_name);
+        var buf: [4096]u8 = undefined;
+
+        const f: File = try Io.openFile(file_name);
         defer f.close();
         const reader = f.reader();
-        var buf: [90]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        const writer = fbs.writer();
-        while (true) {
-            reader.streamUntilDelimiter(writer, '\n', buf.len) catch |err| switch (err) {
-                error.EndOfStream => break,
-                else => return err,
-            };
-            const line = fbs.getWritten();
-            const recipient = try Recipient.fromAgePublicKey(allocator, line, file_key);
-            try recipients.append(recipient);
-            try fbs.seekTo(0);
+        const n = try reader.readAll(&buf);
+        if (n == 0) continue;
+
+        const prefix = buf[0..4];
+        if (mem.eql(u8, prefix, "ssh-")) {
+            const pk = try SshParser.parseOpenSshPublicKey(buf[0..n]);
+            const r = try Recipient.fromSshPublicKey(allocator, pk, file_key);
+            try recipients.append(r);
+        } else if (mem.eql(u8, prefix, "age1")) {
+            var fbs = std.io.fixedBufferStream(&buf);
+            const writer = fbs.writer();
+            while (true) {
+                reader.streamUntilDelimiter(writer, '\n', buf.len) catch |err| switch (err) {
+                    error.EndOfStream => break,
+                    else => return err,
+                };
+                const line = fbs.getWritten();
+                const recipient = try Recipient.fromAgePublicKey(allocator, line, file_key);
+                try recipients.append(recipient);
+                try fbs.seekTo(0);
+            }
+        } else {
+            std.debug.print("Unrecognized recipient file format: {s}\n", .{file_name});
         }
     };
 
@@ -76,13 +90,13 @@ pub fn main() !void {
                 for (files) |file_name| {
                     var identity_buf: [90]u8 = undefined;
                     defer std.crypto.utils.secureZero(u8, &identity_buf);
-
                     const line = try Io.readFirstLine(&identity_buf, file_name);
                     const prefix = line[0..14];
                     if (line.len == 0) continue;
                     if (mem.eql(u8, prefix[0..PemDecoder.header.len], PemDecoder.header)) {
                         var in_buf: [PemDecoder.max_key_size]u8 = undefined;
                         const f = try Io.openFile(file_name);
+                        defer f.close();
                         const reader = f.reader();
                         const n = try reader.readAll(&in_buf);
                         const key = try SshParser.parseOpenSshPrivateKey(in_buf[0..n]);

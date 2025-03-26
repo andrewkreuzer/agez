@@ -90,7 +90,11 @@ pub fn args(allocator: Allocator) !Args {
             exit(1);
         },
         error.EncryptAndDecrypt => {
-            std.debug.print("Incompatible arguments: --encrypt and --decrypt\n", .{});
+            std.debug.print("incompatible arguments: --encrypt and --decrypt\n", .{});
+            exit(1);
+        },
+        error.PassphraseAndRecipient => {
+            std.debug.print("incompatible arguments: -p/--passprase and -r/--recipient\n", .{});
             exit(1);
         },
         else => return err
@@ -174,6 +178,10 @@ pub const Args = struct {
             and self.identity.type.?.multivalue.len > 0
         ) {
             return error.IdRequiresEncryptDecrypt;
+        }
+
+        if (self.passphrase.flag() and self.recipient.values().?.len > 0) {
+            return error.PassphraseAndRecipient;
         }
 
         if (empty or self.help.flag()) {

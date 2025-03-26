@@ -31,14 +31,13 @@ pub fn encrypt(
     recipients: ArrayList(Recipient),
     armored: bool,
 ) !void {
-    const age: Age = .{
-        .version = .v1,
-        .recipients = recipients,
-    };
+    const age: Age = .{ .version = .v1, .recipients = recipients, };
     var age_writer = AgeWriter(@TypeOf(writer)).init(allocator, writer, armored);
+    defer age_writer.deinit();
+
     try age_writer.write(&file_key, age);
+
     _ = try ageEncrypt(&file_key, reader, age_writer.w);
-    age_writer.deinit();
 }
 
 pub fn decrypt(
@@ -67,9 +66,12 @@ pub fn decrypt(
 }
 
 test {
+    _  = _age;
     _  = cli;
     _ = format;
     _ = bech32;
+    _ = armor;
     _ = @import("recipient.zig");
     _ = @import("key.zig");
+    _ = @import("ssh/rsa.zig");
 }

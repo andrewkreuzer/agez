@@ -100,10 +100,10 @@ pub fn ageEncrypt(
 ) !void {
     comptime {
         if (!@hasDecl(@TypeOf(reader), "read")) {
-            @compileError("AgeEncrypt message must implement read");
+            @compileError("AgeEncrypt reader must implement read");
         }
         if (!@hasDecl(@TypeOf(writer), "write")) {
-            @compileError("AgeEncrypt payload must implement read");
+            @compileError("AgeEncrypt writer must implement write");
         }
     }
 
@@ -172,10 +172,10 @@ pub fn ageDecrypt(
 ) anyerror!void {
     comptime {
         if (!@hasDecl(@TypeOf(reader), "read")) {
-            @compileError("AgeDecrypt payload must implement read");
+            @compileError("AgeDecrypt reader must implement read");
         }
         if (!@hasDecl(@TypeOf(writer), "write")) {
-            @compileError("AgeDecrypt message must implement write");
+            @compileError("AgeDecrypt writer must implement write");
         }
     }
 
@@ -213,7 +213,7 @@ pub fn ageDecrypt(
 
     while (true) {
         const read = try reader.readAll(&read_buffer);
-        if (read == 0) { break; }
+        if (read == 0) break;
         if (read < chacha_tag_length) return error.AgeDecryptFailure;
         if (read < age_chunk_size) {
             nonce[nonce.len-1] = 0x01;

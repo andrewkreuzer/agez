@@ -6,6 +6,7 @@ const Allocator = std.mem.Allocator;
 const Key = @import("key.zig").Key;
 const KeyType = @import("key.zig").KeyType;
 const X25519 = @import("X25519.zig");
+const Rsa = @import("ssh/rsa.zig");
 const scrypt = @import("scrypt.zig");
 const ssh = @import("ssh.zig");
 
@@ -50,6 +51,13 @@ pub const Recipient = struct {
 
     pub fn fromAgePrivateKey(allocator: Allocator, s: []const u8, file_key: Key) !Self {
         return try X25519.fromPrivateKey(allocator, s, file_key);
+    }
+
+    pub fn fromSshPublicKey( allocator: Allocator, key: ssh.PublicKey, file_key: Key) !Self {
+        return switch (key) {
+            .ed25519 => |ed25519| try ssh.ed25519.fromPublicKey(allocator, &ed25519.bytes, file_key),
+            .rsa => |rsa| try ssh.rsa.fromPublicKey(allocator, rsa, file_key),
+        };
     }
 
     pub fn fromSshKey(allocator: Allocator, key: Key, file_key: Key) !Self {

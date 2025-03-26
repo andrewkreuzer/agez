@@ -20,13 +20,10 @@ const RecipientType = Recipient.Type;
 const FormatError = error{
     Unexpected,
     InvalidAscii,
-    NoIdentityMatch,
-    NoIdentities,
     EmptyStanza,
     InvalidHeader,
     InvalidWhitespace,
     ScryptMultipleRecipients,
-    HmacGenerationError,
 };
 
 pub fn AgeReader(
@@ -253,16 +250,13 @@ pub fn AgeReader(
                             }
                         }
 
-                        while (true) {
-                            const arg = arg_iter.next();
-                            if (arg == null) break;
-                            try args.append(try self.allocator.dupe(u8, arg.?));
+                        while (arg_iter.next()) |arg| {
+                            try args.append(try self.allocator.dupe(u8, arg));
                         }
 
                         const b = try iter.readUntilFalseOrEof(isStanzaBody);
-                        const body = try self.allocator.alloc(u8, b.len);
+                        const body = try self.allocator.dupe(u8, b);
                         errdefer self.allocator.free(body);
-                        @memcpy(body, b);
 
                         try age.recipients.append(.{
                             .type = _type,
@@ -363,9 +357,12 @@ pub fn AgeWriter(comptime WriterType: type) type {
             var recip = std.ArrayList(u8).init(self.allocator);
             defer recip.deinit();
             var rwriter = recip.writer();
-            for (age.recipients.items) |*r| {
+            for (age.recipients.items, 0..) |*r, i| {
                 const rstring = try r.toStanza(self.allocator);
                 _ = try rwriter.write(rstring);
+                if (i != age.recipients.items.len - 1) {
+                    _ = try rwriter.write("\n");
+                }
                 self.allocator.free(rstring);
             }
 

@@ -99,10 +99,7 @@ test "all" {
     const lib = @import("lib");
     const Key = lib.Key;
 
-    while (true) {
-        const entry = try iter.next();
-        if (entry == null) break;
-
+    while (try iter.next()) |entry| {
         if (mem.eql(u8, entry.?.name, "stanza_valid_characters")) continue;
         if (mem.eql(u8, entry.?.name, "stanza_empty_body")) continue;
         if (mem.eql(u8, entry.?.name, "stanza_empty_last_line")) continue;
