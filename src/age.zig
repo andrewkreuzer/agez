@@ -41,7 +41,7 @@ pub const Age = struct {
                 };
             }
         }
-        return error.AuthenticationFailed;
+        return error.NoIdentityMatch;
     }
 
     pub fn deinit(self: *Self, allocator: Allocator) void {
@@ -261,6 +261,7 @@ const AgeError = error{
     InvalidKeyNonce,
     InvalidHmac,
     NonceRollOver,
+    NoIdentityMatch,
 };
 
 test "round trip" {

@@ -327,11 +327,8 @@ fn test_key() !SecretKey {
     };
 
     var sk = try SecretKey.fromParts(&n, &e, &d, &p, &q);
-    if (!try sk.validate()) try std.testing.expect(false);
-    sk.precompute() catch |err| {
-        std.debug.print("error: {}\n", .{err});
-        try std.testing.expect(false);
-    };
+    try std.testing.expect(try sk.validate());
+    try sk.precompute();
 
     return sk;
 }

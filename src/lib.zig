@@ -9,16 +9,16 @@ pub const bech32 = @import("bech32.zig");
 pub const cli = @import("cli.zig");
 pub const X25519 = @import("X25519.zig");
 pub const ssh = @import("ssh/lib.zig");
+pub const age = @import("age.zig");
+pub const ageEncrypt = age.ageEncrypt;
+pub const ageDecrypt = age.ageDecrypt;
 pub const Io = @import("io.zig");
 pub const Key = @import("key.zig").Key;
 pub const Recipient = @import("recipient.zig").Recipient;
 
 const armor = @import("armor.zig");
 const format = @import("format.zig");
-const _age = @import("age.zig");
-const ageEncrypt = _age.ageEncrypt;
-const ageDecrypt = _age.ageDecrypt;
-const Age = _age.Age;
+const Age = age.Age;
 const AgeReader = format.AgeReader;
 const AgeWriter = format.AgeWriter;
 const Args = cli.Args;
@@ -31,11 +31,11 @@ pub fn encrypt(
     recipients: ArrayList(Recipient),
     armored: bool,
 ) !void {
-    const age: Age = .{ .version = .v1, .recipients = recipients, };
+    const _age: Age = .{ .version = .v1, .recipients = recipients, };
     var age_writer = AgeWriter(@TypeOf(writer)).init(allocator, writer, armored);
     defer age_writer.deinit();
 
-    try age_writer.write(&file_key, age);
+    try age_writer.write(&file_key, _age);
 
     _ = try ageEncrypt(&file_key, reader, age_writer.w);
 }
@@ -49,24 +49,23 @@ pub fn decrypt(
     var age_reader = AgeReader(@TypeOf(reader)).init(allocator, reader);
     defer age_reader.deinit();
 
-    var age = try age_reader.read();
-    defer age.deinit(allocator);
+    var _age = try age_reader.read();
+    defer _age.deinit(allocator);
 
-    const file_key: Key = try age.unwrap(allocator, identities);
+    const file_key: Key = try _age.unwrap(allocator, identities);
     defer file_key.deinit(allocator);
 
-    try age.verify_hmac(&file_key);
+    try _age.verify_hmac(&file_key);
 
     _ = try ageDecrypt(&file_key, age_reader.r, writer);
 }
 
 test {
-    _  = _age;
+    _  = age;
     _  = cli;
     _ = format;
     _ = bech32;
     _ = armor;
     _ = @import("recipient.zig");
-    _ = @import("key.zig");
     _ = @import("ssh/rsa.zig");
 }
