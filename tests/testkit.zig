@@ -100,18 +100,18 @@ test "all" {
     const Key = lib.Key;
 
     while (try iter.next()) |entry| {
-        if (mem.eql(u8, entry.?.name, "stanza_valid_characters")) continue;
-        if (mem.eql(u8, entry.?.name, "stanza_empty_body")) continue;
-        if (mem.eql(u8, entry.?.name, "stanza_empty_last_line")) continue;
-        if (mem.eql(u8, entry.?.name, "x25519_grease")) continue;
+        if (mem.eql(u8, entry.name, "stanza_valid_characters")) continue;
+        if (mem.eql(u8, entry.name, "stanza_empty_body")) continue;
+        if (mem.eql(u8, entry.name, "stanza_empty_last_line")) continue;
+        if (mem.eql(u8, entry.name, "x25519_grease")) continue;
 
-        const file = try testkit_dir.readFileAlloc(allocator, entry.?.name, 100_000);
+        const file = try testkit_dir.readFileAlloc(allocator, entry.name, 100_000);
         defer allocator.free(file);
 
         const testkit = readFile(file) catch |err| switch (err) {
             error.IgnoreCompressedFiles => continue,
             else => {
-                std.debug.print("Error reading testkit {s}: {any}\n", .{entry.?.name, err});
+                std.debug.print("Error reading testkit {s}: {any}\n", .{entry.name, err});
                 try std.testing.expect(false);
                 break;
             }
@@ -145,7 +145,7 @@ test "all" {
             // expect: HMAC failure
             error.InvalidHmac
                 => {
-                    if (mem.eql(u8, entry.?.name, "hmac_not_canonical")) continue;
+                    if (mem.eql(u8, entry.name, "hmac_not_canonical")) continue;
                     try t.expectEqualStrings(testkit.expect, "HMAC failure");
                 },
             // expect: armor failure
@@ -179,11 +179,11 @@ test "all" {
                     // so if it's unknown we return invalid recipient
                     // type instead of a no match
                     if (
-                        mem.eql(u8, entry.?.name, "x25519_lowercase")
+                        mem.eql(u8, entry.name, "x25519_lowercase")
                         and err == error.InvalidRecipientType
                     ) continue;
                     if (
-                        mem.eql(u8, entry.?.name, "scrypt_uppercase")
+                        mem.eql(u8, entry.name, "scrypt_uppercase")
                         and err == error.InvalidRecipientType
                     ) continue;
                     // we don't start the armored reader until we hit the
@@ -191,7 +191,7 @@ test "all" {
                     // header instead of armor failure. Whitespace is allowed
                     // but it must be followed by an armor begin marker
                     if (
-                        mem.eql(u8, entry.?.name, "armor_garbage_leading")
+                        mem.eql(u8, entry.name, "armor_garbage_leading")
                         and err == error.InvalidHeader
                     ) continue;
 
@@ -206,20 +206,20 @@ test "all" {
                     // we fail when trying to read the nonce bytes in the payload
                     // returning InvalidKeyNonce as the payload is completely empty
                     if (
-                        mem.eql(u8, entry.?.name, "stream_no_nonce")
+                        mem.eql(u8, entry.name, "stream_no_nonce")
                         and err == error.InvalidKeyNonce
                     ) continue;
                     // same as above I would assume this is a payload failure
                     // we're done reading the header
                     if (
-                        mem.eql(u8, entry.?.name, "stream_short_nonce")
+                        mem.eql(u8, entry.name, "stream_short_nonce")
                         and err == error.InvalidKeyNonce
                     ) continue;
 
                     try t.expectEqualStrings(testkit.expect, "payload failure");
                 },
             else => {
-                std.debug.print("Error decrypting {s}: {any}\n", .{entry.?.name, err});
+                std.debug.print("Error decrypting {s}: {any}\n", .{entry.name, err});
                 try std.testing.expect(false);
             }
         };
