@@ -123,7 +123,7 @@ test "all" {
                     try Key.init(allocator, testkit.identity),
                 };
             }
-            if (testkit.passphrase.len > 0) {
+            else if (testkit.passphrase.len > 0) {
                 break :blk [_]Key{
                     try Key.init(allocator, testkit.passphrase),
                 };
@@ -136,7 +136,8 @@ test "all" {
         const reader = fbs.reader().any();
         var dest = std.ArrayList(u8).init(allocator);
         const writer = dest.writer().any();
-        agez.decrypt(allocator, reader, writer, &identities) catch |err| switch (err) {
+        const Decryptor = agez.AgeDecryptor(@TypeOf(reader), @TypeOf(writer)).init(allocator, reader, writer);
+        Decryptor.decrypt(&identities) catch |err| switch (err) {
             // expect: no match
             error.NoIdentityMatch
                 => {

@@ -5,9 +5,12 @@ const ArrayList = std.ArrayList;
 const File = std.fs.File;
 
 const agez = @import("agez");
+const age = agez.age;
 const cli = agez.cli;
 const Io = agez.Io;
 const Key = agez.Key;
+const AgeEncryptor = agez.AgeEncryptor;
+const AgeDecryptor = agez.AgeDecryptor;
 const SshParser = agez.ssh.Parser;
 const PemDecoder = agez.ssh.PemDecoder;
 const Recipient = agez.Recipient;
@@ -141,8 +144,10 @@ pub fn main() !void {
     const reader = io.reader();
     const writer = io.writer();
     if (decrypt) {
-        try agez.decrypt(allocator, reader.any(), writer.any(), identities.?);
+        const Decryptor = AgeDecryptor(@TypeOf(reader), @TypeOf(writer)).init(allocator, reader, writer);
+        try Decryptor.decrypt(identities.?);
     } else {
-        try agez.encrypt(allocator, reader.any(), writer.any(), file_key, recipients, armored);
+        const Encryptor = AgeEncryptor(@TypeOf(reader), @TypeOf(writer)).init(allocator, reader, writer);
+        try Encryptor.encrypt(&file_key, recipients, armored);
     }
 }

@@ -1,6 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
-const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
+const crypto = std.crypto;
+const ChaCha20Poly1305 = crypto.aead.chacha_poly.ChaCha20Poly1305;
 const hkdf = std.crypto.kdf.hkdf.HkdfSha256;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
@@ -9,11 +10,11 @@ const generate_hmac = @import("format.zig").generate_hmac;
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
 
-pub const Age = struct {
+pub const Header = struct {
     version: ?Version = null,
     recipients: ArrayList(Recipient),
     mac: ?[]u8 = null,
-    header: ?[]u8 = null,
+    bytes: ?[]u8 = null,
 
     const Self = @This();
 
@@ -24,7 +25,7 @@ pub const Age = struct {
     }
 
     pub fn verify_hmac(self: *Self, fk: *const Key) !void {
-        const encoded = generate_hmac(self.header.?, fk);
+        const encoded = generate_hmac(self.bytes.?, fk);
         if (!std.mem.eql(u8, self.mac.?, &encoded)) {
             return error.InvalidHmac;
         }
@@ -52,11 +53,11 @@ pub const Age = struct {
         if (self.mac) |mac| {
             allocator.free(mac);
         }
-        if (self.header) |header| {
+        if (self.bytes) |header| {
             allocator.free(header);
         }
         self.mac = null;
-        self.header = null;
+        self.bytes = null;
     }
 
 };
@@ -94,151 +95,161 @@ const chacha_nonce_length = ChaCha20Poly1305.nonce_length;
 const chacha_key_length = ChaCha20Poly1305.key_length;
 const age_chunk_size = 64 * 1024;
 
-/// Encrypts the message using ChaCha20Poly1305
-/// using age's encryption scheme and returns
-/// the nonce, ciphertext, and tag in payload
-pub fn ageEncrypt(
-    key: *const Key,
-    reader: anytype,
-    writer: anytype,
-) !void {
-    comptime {
-        if (!@hasDecl(@TypeOf(reader), "read")) {
-            @compileError("AgeEncrypt reader must implement read");
-        }
-        if (!@hasDecl(@TypeOf(writer), "write")) {
-            @compileError("AgeEncrypt writer must implement write");
-        }
-    }
-
-    // the key used to encrypt the payload
-    // derived from the file key and the nonce
-    var encryption_key: [32]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &encryption_key);
-
-    // the nonce used to generate the encryption
-    // key, randomly generated from /dev/random
-    var key_nonce: [nonce_length]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &key_nonce);
-
-    // the tag returned from ChaCha20Poly1305
-    var tag: [chacha_tag_length]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &key_nonce);
-
-    // additional data for ChaCha20Poly1305
-    // age doesn't use this so we set it empty
-    const ad = [_]u8{};
-
-    // the nonce used to encrypt the payload, changes for each block,
-    // starting at 0 and incrementing by 1 (big endian) for each block. The
-    // last byte is 0x01 for the last block and 0x00 for all other blocks
-    var nonce = [_]u8{0x00} ** chacha_nonce_length;
-
-    var read_buffer: [age_chunk_size]u8 = undefined;
-    var write_buffer: [age_chunk_size + chacha_tag_length]u8 = undefined;
-
-    // TODO: we'll assume no issues for now, GRND_RANDOM
-    _ = std.os.linux.getrandom(&key_nonce, key_nonce.len, 0x0002);
-
-    const k = hkdf.extract(&key_nonce, key.key().bytes);
-    hkdf.expand(&encryption_key, "payload", k);
-
-    _ = try writer.write(&key_nonce);
-
-    while (true) {
-        const read = try reader.read(&read_buffer);
-        if (read == 0) { break; }
-        if (read < read_buffer.len) {
-            nonce[nonce.len-1] = 0x01;
-        }
-
-        ChaCha20Poly1305.encrypt(
-            write_buffer[0..read],
-            &tag,
-            read_buffer[0..read],
-            &ad,
-            nonce,
-            encryption_key
-        );
-
-        _ = try writer.write(write_buffer[0..read]);
-        _ = try writer.write(&tag);
-        try incrementNonce(&nonce);
-    }
+/// Encrypts data from reader into writer with
+/// age's ChaCha20Poly1305 encryption scheme
+pub fn encrypt(key: *const Key, reader: anytype, writer: anytype) !void {
+    var encryptor = try Encryptor(@TypeOf(writer)).init(key, writer);
+    try encryptor.encrypt(reader);
 }
 
-/// Decrypts the payload using ChaCha20Poly1305
-/// and returns the plaintext in message
-pub fn ageDecrypt(
-    key: *const Key,
-    reader: anytype,
-    writer: anytype,
-) anyerror!void {
-    comptime {
-        if (!@hasDecl(@TypeOf(reader), "read")) {
-            @compileError("AgeDecrypt reader must implement read");
-        }
-        if (!@hasDecl(@TypeOf(writer), "write")) {
-            @compileError("AgeDecrypt writer must implement write");
-        }
-    }
+pub fn Encryptor(WriterType: type) type {
+    return struct {
+        const Self = @This();
 
-    // the key used to decrypt the payload
-    // derived from the file key and the
-    // randomly generated key nonce
-    var encryption_key: [32]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &encryption_key);
+        key: *const Key,
+        nonce: [nonce_length]u8 = undefined,
+        writer: WriterType,
 
-    // the nonce used to generate the encryption key
-    // always the first 16 bytes of the ciphertext
-    var key_nonce: [nonce_length]u8 = undefined;
+        read_buffer: [age_chunk_size]u8 = undefined,
+        write_buffer: [age_chunk_size + chacha_tag_length]u8 = undefined,
 
-    // the ChaCha20Poly1305 tag used to authenticate the payload
-    // always the last 16 bytes of the ciphertext
-    var tag: [chacha_tag_length]u8 = undefined;
-
-    // additional data for ChaCha20Poly1305
-    // age doesn't use this so we set it empty
-    const ad = [_]u8{};
-
-    // the nonce used to encrypt the payload, changes for each block,
-    // starting at 0 and incrementing by 1 (big endian) for each block. The
-    // last byte is 0x01 for the last block and 0x00 for all other blocks
-    var nonce = [_]u8{0x00} ** 12;
-
-    var read_buffer: [age_chunk_size + chacha_tag_length]u8 = undefined;
-    var write_buffer: [age_chunk_size]u8 = undefined;
-
-    const key_nonce_read = try reader.readAll(&key_nonce);
-    if (key_nonce_read != nonce_length) { return error.InvalidKeyNonce; }
-
-    const k = hkdf.extract(&key_nonce, key.slice.k);
-    hkdf.expand(&encryption_key, "payload", k);
-
-    while (true) {
-        const read = try reader.readAll(&read_buffer);
-        if (read == 0) break;
-        if (read < chacha_tag_length) return error.AgeDecryptFailure;
-        if (read < age_chunk_size) {
-            nonce[nonce.len-1] = 0x01;
+        pub fn init(key: *const Key, writer: WriterType) !Self {
+            var self = Self{ .key = key, .writer = writer };
+            _ = try writer.write(&self.generateKeyNonce());
+            return self;
         }
 
-        @memcpy(&tag, read_buffer[read-chacha_tag_length..read]);
+        pub fn encrypt(self: *Self, reader: anytype) !void {
+            // the tag returned from ChaCha20Poly1305
+            var tag: [chacha_tag_length]u8 = undefined;
+            defer crypto.utils.secureZero(u8, &tag);
 
-        ChaCha20Poly1305.decrypt(
-            write_buffer[0..read-chacha_tag_length],
-            read_buffer[0..read-chacha_tag_length],
-            tag,
-            &ad,
-            nonce,
-            encryption_key
-        ) catch |err| switch (err) {
-            error.AuthenticationFailed => return error.AgeDecryptFailure,
-            else => return err,
-        };
-        _ = try writer.write(write_buffer[0..read-chacha_tag_length]);
-        try incrementNonce(&nonce);
-    }
+            // additional data for ChaCha20Poly1305
+            // age doesn't use this so we set it empty
+            const ad = [_]u8{};
+
+            // the nonce used to encrypt the payload, changes for each block,
+            // starting at 0 and incrementing by 1 (big endian) for each block. The
+            // last byte is 0x01 for the last block and 0x00 for all other blocks
+            var nonce = [_]u8{0x00} ** chacha_nonce_length;
+
+            // the key used to encrypt the payload
+            // derived from the file key and the nonce
+            var encryption_key: [ChaCha20Poly1305.key_length]u8 = undefined;
+            crypto.utils.secureZero(u8, &encryption_key);
+
+            const k = hkdf.extract(&self.nonce, self.key.key().bytes);
+            hkdf.expand(&encryption_key, "payload", k);
+
+            while (true) {
+                const read = try reader.read(&self.read_buffer);
+                if (read == 0) break;
+                if (read < self.read_buffer.len) {
+                    nonce[nonce.len-1] = 0x01;
+                }
+
+                ChaCha20Poly1305.encrypt(
+                    self.write_buffer[0..read],
+                    &tag,
+                    self.read_buffer[0..read],
+                    &ad,
+                    nonce,
+                    encryption_key
+                );
+
+                _ = try self.writer.write(self.write_buffer[0..read]);
+                _ = try self.writer.write(&tag);
+                try incrementNonce(&nonce);
+            }
+        }
+
+        // the nonce used to generate the encryption key
+        // filled with random bytes
+        fn generateKeyNonce(self: *Self) [nonce_length]u8 {
+            crypto.random.bytes(&self.nonce);
+            return self.nonce;
+        }
+    };
+}
+
+/// Decrypts the data from reader into writer
+/// using age's ChaCha20Poly1305 encryption scheme
+pub fn decrypt(key: *const Key, reader: anytype, writer: anytype,) !void {
+    var decryptor = try Decryptor(@TypeOf(reader)).init(key, reader);
+    try decryptor.decrypt(writer);
+}
+
+pub fn Decryptor(ReaderType: type) type {
+    return struct {
+        const Self = @This();
+
+        key: *const Key,
+        nonce: [nonce_length]u8 = undefined,
+        reader: ReaderType,
+
+        read_buffer: [age_chunk_size + chacha_tag_length]u8 = undefined,
+        write_buffer: [age_chunk_size]u8 = undefined,
+
+        pub fn init(key: *const Key, reader: ReaderType) !Self {
+            var self = Self{ .key = key, .reader = reader };
+            try self.readKeyNonce();
+            return self;
+        }
+
+        pub fn decrypt(self: *Self, writer: anytype) !void {
+            // the ChaCha20Poly1305 tag used to authenticate the payload
+            // always the last 16 bytes of the ciphertext
+            var tag: [chacha_tag_length]u8 = undefined;
+            crypto.utils.secureZero(u8, &tag);
+
+            // additional data for ChaCha20Poly1305
+            // age doesn't use this so we set it empty
+            const ad = [_]u8{};
+
+            // the nonce used to encrypt the payload, changes for each block,
+            // starting at 0 and incrementing by 1 (big endian) for each block. The
+            // last byte is 0x01 for the last block and 0x00 for all other blocks
+            var nonce = [_]u8{0x00} ** 12;
+
+            // the key used to encrypt the payload
+            // derived from the file key and the nonce
+            var encryption_key: [32]u8 = undefined;
+            crypto.utils.secureZero(u8, &encryption_key);
+
+            const k = hkdf.extract(&self.nonce, self.key.slice.k);
+            hkdf.expand(&encryption_key, "payload", k);
+
+            while (true) {
+                const read = try self.reader.readAll(&self.read_buffer);
+                if (read == 0) break;
+                if (read < chacha_tag_length) return error.AgeDecryptFailure;
+                if (read < age_chunk_size) {
+                    nonce[nonce.len-1] = 0x01;
+                }
+
+                @memcpy(&tag, self.read_buffer[read-chacha_tag_length..read]);
+
+                ChaCha20Poly1305.decrypt(
+                    self.write_buffer[0..read-chacha_tag_length],
+                    self.read_buffer[0..read-chacha_tag_length],
+                    tag,
+                    &ad,
+                    nonce,
+                    encryption_key
+                ) catch |err| switch (err) {
+                    error.AuthenticationFailed => return error.AgeDecryptFailure,
+                    else => return err,
+                };
+                _ = try writer.write(self.write_buffer[0..read-chacha_tag_length]);
+                try incrementNonce(&nonce);
+            }
+        }
+
+        fn readKeyNonce(self: *Self) !void {
+            const n = try self.reader.readAll(&self.nonce);
+            if (n != nonce_length) return error.InvalidKeyNonce;
+        }
+    };
 }
 
 fn incrementNonce(nonce: []u8) !void {
@@ -317,11 +328,11 @@ test "round trip" {
         var out_fbs = std.io.fixedBufferStream(out);
         defer allocator.free(out);
 
-        _ = try ageEncrypt(&key, plaintext_fbs.reader(), ciphertext_fbs.writer());
+        _ = try encrypt(&key, plaintext_fbs.reader(), ciphertext_fbs.writer());
 
         ciphertext_fbs.reset();
 
-        _ = try ageDecrypt(&key, ciphertext_fbs.reader(), out_fbs.writer());
+        _ = try decrypt(&key, ciphertext_fbs.reader(), out_fbs.writer());
 
         try std.testing.expectEqualSlices(u8, out, c.plaintext);
     }
