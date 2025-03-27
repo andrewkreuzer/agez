@@ -1,8 +1,9 @@
+const Allocator = @import("std").mem.Allocator;
 const std = @import("std");
 const assert = std.debug.assert;
 const Ed25519 = std.crypto.sign.Ed25519;
+
 const Rsa = @import("ssh/lib.zig").Rsa;
-const Allocator = @import("std").mem.Allocator;
 
 const Bytes = struct {
     k: []u8,

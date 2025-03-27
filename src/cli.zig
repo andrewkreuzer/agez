@@ -1,4 +1,3 @@
-const builtin = @import("builtin");
 const std = @import("std");
 const exit = std.os.linux.exit;
 const mem = std.mem;
@@ -6,6 +5,7 @@ const process = std.process;
 const ArgIterator = process.ArgIterator;
 const ArgIteratorGeneral = process.ArgIteratorGeneral;
 const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 
 pub const Arg = struct {
     short: ?[]const u8 = null,

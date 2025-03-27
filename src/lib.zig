@@ -4,21 +4,20 @@ const AnyReader = std.io.AnyReader;
 const AnyWriter = std.io.AnyWriter;
 const ArrayList = std.ArrayList;
 
+pub const age = @import("age.zig");
+const Header = age.Header;
+const armor = @import("armor.zig");
 pub const bech32 = @import("bech32.zig");
 pub const cli = @import("cli.zig");
-pub const X25519 = @import("X25519.zig");
-pub const ssh = @import("ssh/lib.zig");
-pub const age = @import("age.zig");
+const Args = cli.Args;
+const format = @import("format.zig");
 pub const AgeReader = format.AgeReader;
 pub const AgeWriter = format.AgeWriter;
 pub const Io = @import("io.zig");
 pub const Key = @import("key.zig").Key;
 pub const Recipient = @import("recipient.zig").Recipient;
-
-const armor = @import("armor.zig");
-const format = @import("format.zig");
-const Header = age.Header;
-const Args = cli.Args;
+pub const ssh = @import("ssh/lib.zig");
+pub const X25519 = @import("X25519.zig");
 
 const RecipientList = ArrayList(Recipient);
 

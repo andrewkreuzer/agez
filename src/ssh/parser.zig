@@ -4,11 +4,11 @@ const modes = std.crypto.core.modes;
 const Aes256 = std.crypto.core.aes.Aes256;
 const Ed25519 = std.crypto.sign.Ed25519;
 
-const ssh = @import("../ssh.zig");
-const Rsa = @import("rsa.zig");
 const Io = @import("../io.zig");
 const Key = @import("../key.zig").Key;
+const ssh = @import("../ssh.zig");
 const PemDecoder = @import("lib.zig").PemDecoder;
+const Rsa = @import("rsa.zig");
 
 const PublicKeySpec = struct {
     key_type: []u8,

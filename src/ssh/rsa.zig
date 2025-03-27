@@ -12,7 +12,7 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 
 const max_bits: u32 = 4096;
 const MaxPrim = u5120;
-                       //
+
 pub const KeyPair = struct {
     public_key: PublicKey,
     private_key: SecretKey,

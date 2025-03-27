@@ -1,8 +1,8 @@
 const std = @import("std");
 const mem = std.mem;
 
-pub const Rsa = @import("rsa.zig");
 pub const Parser = @import("parser.zig");
+pub const Rsa = @import("rsa.zig");
 
 pub const PemDecoder = struct {
     pub const header = "-----BEGIN";

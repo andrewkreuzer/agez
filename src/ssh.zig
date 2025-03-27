@@ -10,12 +10,12 @@ const ArrayList = std.ArrayList;
 const Sha512 = std.crypto.hash.sha2.Sha512;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
-const Parser = @import("ssh/lib.zig").Parser;
-const Rsa = @import("ssh/rsa.zig");
-const ssh = @import("ssh/lib.zig");
 const Key = @import("key.zig").Key;
-const PemDecoder = ssh.PemDecoder;
 const Recipient = @import("recipient.zig").Recipient;
+const ssh = @import("ssh/lib.zig");
+const Parser = ssh.Parser;
+const PemDecoder = ssh.PemDecoder;
+const Rsa = ssh.Rsa;
 
 pub const ed25519_stanza_arg = "ssh-ed25519";
 pub const rsa_stanza_arg = "ssh-rsa";

@@ -8,9 +8,9 @@ const AllocatorError = mem.Allocator.Error;
 const ArrayList = std.ArrayList;
 
 const age = @import("age.zig");
-const armor = @import("armor.zig");
 const Header = age.Header;
 const Version = age.Version;
+const armor = @import("armor.zig");
 const ArmoredReader = armor.ArmoredReader;
 const ArmoredWriter = armor.ArmoredWriter;
 const Key = @import("key.zig").Key;

@@ -1,15 +1,15 @@
-const builtin = @import("builtin");
 const std = @import("std");
 const meta = std.meta;
 const io = std.io;
 const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 
 const Key = @import("key.zig").Key;
 const KeyType = @import("key.zig").KeyType;
-const X25519 = @import("X25519.zig");
-const Rsa = @import("ssh/rsa.zig");
 const scrypt = @import("scrypt.zig");
 const ssh = @import("ssh.zig");
+const Rsa = @import("ssh/rsa.zig");
+const X25519 = @import("X25519.zig");
 
 pub const Recipient = struct {
     const Self = @This();
