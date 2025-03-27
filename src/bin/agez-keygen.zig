@@ -4,10 +4,10 @@ const time = std.time;
 const Allocator = std.mem.Allocator;
 const ArgIterator = std.process.ArgIterator;
 
-const lib = @import("lib");
-const X25519 = lib.X25519;
-const bech32 = lib.bech32;
-const Arg = lib.cli.Arg;
+const agez = @import("agez");
+const X25519 = agez.X25519;
+const bech32 = agez.bech32;
+const Arg = agez.cli.Arg;
 
 const Args = struct {
     const Self = @This();

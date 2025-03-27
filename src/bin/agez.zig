@@ -4,14 +4,14 @@ const exit = std.posix.exit;
 const ArrayList = std.ArrayList;
 const File = std.fs.File;
 
-const lib = @import("lib");
-const cli = lib.cli;
-const Io = lib.Io;
-const Key = lib.Key;
-const SshParser = lib.ssh.Parser;
-const PemDecoder = lib.ssh.PemDecoder;
-const Recipient = lib.Recipient;
-const X25519 = lib.X25519;
+const agez = @import("agez");
+const cli = agez.cli;
+const Io = agez.Io;
+const Key = agez.Key;
+const SshParser = agez.ssh.Parser;
+const PemDecoder = agez.ssh.PemDecoder;
+const Recipient = agez.Recipient;
+const X25519 = agez.X25519;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -141,8 +141,8 @@ pub fn main() !void {
     const reader = io.reader();
     const writer = io.writer();
     if (decrypt) {
-        try lib.decrypt(allocator, reader.any(), writer.any(), identities.?);
+        try agez.decrypt(allocator, reader.any(), writer.any(), identities.?);
     } else {
-        try lib.encrypt(allocator, reader.any(), writer.any(), file_key, recipients, armored);
+        try agez.encrypt(allocator, reader.any(), writer.any(), file_key, recipients, armored);
     }
 }

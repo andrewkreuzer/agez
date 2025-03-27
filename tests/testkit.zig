@@ -96,8 +96,8 @@ test "all" {
     var testkit_dir = try std.fs.cwd().openDir(testkit_path, .{.iterate = true});
     var iter = testkit_dir.iterate();
 
-    const lib = @import("lib");
-    const Key = lib.Key;
+    const agez = @import("agez");
+    const Key = agez.Key;
 
     while (try iter.next()) |entry| {
         if (mem.eql(u8, entry.name, "stanza_valid_characters")) continue;
@@ -136,7 +136,7 @@ test "all" {
         const reader = fbs.reader().any();
         var dest = std.ArrayList(u8).init(allocator);
         const writer = dest.writer().any();
-        lib.decrypt(allocator, reader, writer, &identities) catch |err| switch (err) {
+        agez.decrypt(allocator, reader, writer, &identities) catch |err| switch (err) {
             // expect: no match
             error.NoIdentityMatch
                 => {
