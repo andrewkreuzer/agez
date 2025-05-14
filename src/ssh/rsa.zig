@@ -5,12 +5,12 @@ const math = std.math;
 const ff = std.crypto.ff;
 const os = std.os;
 
-const Uint = ff.Uint(max_bits);
-const Modulus = ff.Modulus(max_bits);
+const Uint = ff.Uint(MAX_BITS);
+const Modulus = ff.Modulus(MAX_BITS);
 const Fe = Modulus.Fe;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
-const max_bits: u32 = 4096;
+const MAX_BITS: u32 = 4096;
 const MaxPrim = u5120;
 
 pub const KeyPair = struct {

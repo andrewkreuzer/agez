@@ -6,8 +6,9 @@ const Allocator = std.mem.Allocator;
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
 
-pub const stanza_arg = "scrypt";
-const key_label = "age-encryption.org/v1/scrypt";
+pub const STANZA_ARG = "scrypt";
+const KEY_LABEL = "age-encryption.org/v1/scrypt";
+
 const rounds = 8;
 const parallization = 1;
 
@@ -44,8 +45,8 @@ pub fn unwrap(allocator: Allocator, passphrase: []const u8, args: [][]u8, body: 
 
     // the key label and base64 decoded salt
     // derived from the recipients arg
-    var salt: [key_label.len+16]u8 = undefined;
-    @memcpy(salt[0..key_label.len], key_label);
+    var salt: [KEY_LABEL.len+16]u8 = undefined;
+    @memcpy(salt[0..KEY_LABEL.len], KEY_LABEL);
 
     // derived from the last 16 bytes
     // of the recipients body, the Poly
@@ -76,7 +77,7 @@ pub fn unwrap(allocator: Allocator, passphrase: []const u8, args: [][]u8, body: 
     if (salt_len != 16) {
         return error.InvalidScryptSaltLength;
     }
-    Decoder.decode(salt[key_label.len..], args[0]) catch {
+    Decoder.decode(salt[KEY_LABEL.len..], args[0]) catch {
         return error.InvalidScryptSalt;
     };
     Decoder.decode(&file_key_enc, body) catch {
@@ -117,8 +118,8 @@ pub fn wrap(allocator: Allocator, file_key: Key, passphrase: Key) !Recipient {
     // encoded and written to the reciepient's body
     var file_key_enc: [32]u8 = undefined;
 
-    var salt: [key_label.len+16]u8 = undefined;
-    @memcpy(salt[0..key_label.len], key_label);
+    var salt: [KEY_LABEL.len+16]u8 = undefined;
+    @memcpy(salt[0..KEY_LABEL.len], KEY_LABEL);
 
     // a blank nonce
     const nonce = [_]u8{0x00} ** 12;
@@ -137,7 +138,7 @@ pub fn wrap(allocator: Allocator, file_key: Key, passphrase: Key) !Recipient {
     var body: [43]u8 = undefined;
 
     _ = std.os.linux.getrandom(
-        salt[key_label.len..],
+        salt[KEY_LABEL.len..],
         salt.len,
         0x0002 // GRND_RANDOM
     );
@@ -159,7 +160,7 @@ pub fn wrap(allocator: Allocator, file_key: Key, passphrase: Key) !Recipient {
 
     const Encoder = std.base64.standard_no_pad.Encoder;
     _ = Encoder.encode(&body, &file_key_enc);
-    const salt_b64 = Encoder.encode(&salt_b64_buf, salt[key_label.len..]);
+    const salt_b64 = Encoder.encode(&salt_b64_buf, salt[KEY_LABEL.len..]);
 
     var args = try allocator.alloc([]u8, 2);
     args[0] = try allocator.dupe(u8, salt_b64);

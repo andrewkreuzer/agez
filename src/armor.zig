@@ -4,24 +4,25 @@ const assert = std.debug.assert;
 const io = std.io;
 const window = std.mem.window;
 
-pub const armor_begin_marker = "-----BEGIN AGE ENCRYPTED FILE-----";
-pub const armor_end_marker = "-----END AGE ENCRYPTED FILE-----";
-const armor_columns_per_line = 64;
-const armor_bytes_per_line = armor_columns_per_line / 4 * 3;
+pub const ARMOR_BEGIN_MARKER = "-----BEGIN AGE ENCRYPTED FILE-----";
+pub const ARMOR_END_MARKER = "-----END AGE ENCRYPTED FILE-----";
 
-const armor_end_map = blk: {
+const ARMOR_COLUMNS_PER_LINE = 64;
+const ARMOR_BYTES_PER_LINE = ARMOR_COLUMNS_PER_LINE / 4 * 3;
+
+const ARMOR_END_MAP = blk: {
     var map = [_]u8{0} ** 128;
-    for (armor_end_marker, 1..) |c, i| {
+    for (ARMOR_END_MARKER, 1..) |c, i| {
         map[c] = i;
     }
     break :blk map;
 };
 
 pub fn isArmorBegin(line: []u8) !bool {
-    if (line.len < armor_begin_marker.len) return false;
-    const slice = line[0..armor_begin_marker.len];
-    const prefix = armor_begin_marker[0..5];
-    const full_match = std.mem.eql(u8, slice, armor_begin_marker);
+    if (line.len < ARMOR_BEGIN_MARKER.len) return false;
+    const slice = line[0..ARMOR_BEGIN_MARKER.len];
+    const prefix = ARMOR_BEGIN_MARKER[0..5];
+    const full_match = std.mem.eql(u8, slice, ARMOR_BEGIN_MARKER);
     if (std.mem.eql(u8, slice[0..5], prefix) and !full_match) {
         return error.ArmorInvalidMarker;
     }
@@ -29,14 +30,14 @@ pub fn isArmorBegin(line: []u8) !bool {
 }
 
 pub fn isArmorEnd(line: []u8) bool {
-    return std.mem.eql(u8, line, armor_end_marker);
+    return std.mem.eql(u8, line, ARMOR_END_MARKER);
 }
 
 pub fn ArmoredReader(comptime ReaderType: type) type {
     return struct {
         r: ReaderType,
-        buf: [armor_bytes_per_line]u8 = undefined,
-        encoded_buf: [armor_columns_per_line + 1]u8 = undefined,
+        buf: [ARMOR_BYTES_PER_LINE]u8 = undefined,
+        encoded_buf: [ARMOR_COLUMNS_PER_LINE + 1]u8 = undefined,
         start: usize = 0,
         end: usize = 0,
 
@@ -55,7 +56,7 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
         fn fill(self: *Self) Error!usize {
             if (self.marker_found) return 0;
 
-            var buf: [armor_columns_per_line]u8 = undefined;
+            var buf: [ARMOR_COLUMNS_PER_LINE]u8 = undefined;
             var n = try self.r.readAll(&buf);
             if (n == 0) return 0;
 
@@ -63,9 +64,9 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
 
             // if we read less than 64 bytes the end
             // marker must be at the end of the buffer
-            if (n != armor_columns_per_line) {
-                if (n < armor_end_marker.len) return error.ArmorNoEndMarker;
-                if (mem.indexOf(u8, slice, armor_end_marker)) |start| {
+            if (n != ARMOR_COLUMNS_PER_LINE) {
+                if (n < ARMOR_END_MARKER.len) return error.ArmorNoEndMarker;
+                if (mem.indexOf(u8, slice, ARMOR_END_MARKER)) |start| {
                     var s = start;
                     if (s == 0) return 0;
                     if (slice[s-1] == '\n') s -= 1;
@@ -78,7 +79,7 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
                 // the last character is in the end marker
                 // and walk our way back to the start if so
                 const b = slice[n-1];
-                var pos = armor_end_map[b];
+                var pos = ARMOR_END_MAP[b];
                 if (pos != 0) {
                     const start = n - pos;
                     const maybe_marker = slice[start..n];
@@ -87,12 +88,12 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
                         const c = maybe_marker[pos];
                         // TODO: confirm end marker is correct
                         // currently we just assume it is
-                        if (pos < armor_end_marker.len and c == '\n') {
+                        if (pos < ARMOR_END_MARKER.len and c == '\n') {
                             self.marker_found = true;
                             if (pos > 0 and slice[pos-1] == '\r') pos -= 1;
                             slice = buf[0..start+pos];
                         }
-                        if (armor_end_map[c] == 0) break;
+                        if (ARMOR_END_MAP[c] == 0) break;
                     }
                 }
             }
@@ -140,7 +141,7 @@ pub fn ArmoredReader(comptime ReaderType: type) type {
 pub fn ArmoredWriter(comptime WriterType: type) type {
     return struct {
         w: WriterType,
-        decoded_buf: [armor_bytes_per_line]u8 = undefined,
+        decoded_buf: [ARMOR_BYTES_PER_LINE]u8 = undefined,
         written: usize = 0,
         end: usize = 0,
 
@@ -176,7 +177,7 @@ pub fn ArmoredWriter(comptime WriterType: type) type {
         }
 
         pub fn flush(self: *Self) Error!void {
-            var buf: [armor_columns_per_line]u8 = undefined;
+            var buf: [ARMOR_COLUMNS_PER_LINE]u8 = undefined;
             const n = Encoder.calcSize(self.decoded_buf[0..self.end].len);
             _ = Encoder.encode(buf[0..n], self.decoded_buf[0..self.end]);
             try self.w.writeAll(buf[0..n]);

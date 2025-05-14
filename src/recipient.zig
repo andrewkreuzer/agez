@@ -1,15 +1,15 @@
 const std = @import("std");
 const meta = std.meta;
 const io = std.io;
-const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
+const Allocator = std.mem.Allocator;
 
-const Key = @import("key.zig").Key;
-const KeyType = @import("key.zig").KeyType;
 const scrypt = @import("scrypt.zig");
 const ssh = @import("ssh.zig");
 const Rsa = @import("ssh/rsa.zig");
 const X25519 = @import("X25519.zig");
+const Key = @import("key.zig").Key;
+const KeyType = @import("key.zig").KeyType;
 
 pub const Recipient = struct {
     const Self = @This();
@@ -147,8 +147,8 @@ test "X25519 recipient" {
     var identity = "AGE-SECRET-KEY-1XMWWC06LY3EE5RYTXM9MFLAZ2U56JJJ36S0MYPDRWSVLUL66MV4QX3S7F6".*;
     const id: Key = .{ .slice = .{ .k = &identity } };
     var file_key = try recipient.unwrap(allocator, id);
-    var identity_buf: [X25519.bech32_max_len]u8 = undefined;
-    const Bech32 = try bech32.decode(&identity_buf, X25519.bech32_hrp_private, &identity);
+    var identity_buf: [X25519.BECH32_MAX_LEN]u8 = undefined;
+    const Bech32 = try bech32.decode(&identity_buf, X25519.BECH32_HRP_PRIVATE, &identity);
     var x25519_secret_key: [32]u8 = undefined;
     _ = try bech32.convertBits(&x25519_secret_key, Bech32.data, 5, 8, false);
     const public_key: [32]u8 = try std.crypto.dh.X25519.recoverPublicKey(x25519_secret_key);

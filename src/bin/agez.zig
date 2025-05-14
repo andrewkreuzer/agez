@@ -111,7 +111,7 @@ pub fn main() !void {
                         const r = try Recipient.fromSshKey(allocator, key, file_key);
                         try recipients.append(r);
                     } else if (
-                        mem.eql(u8, prefix, X25519.bech32_hrp_private[0..14])
+                        mem.eql(u8, prefix, X25519.BECH32_HRP_PRIVATE[0..14])
                     ) {
                         const key = try Key.init(allocator, line);
                         try ids.append(key);

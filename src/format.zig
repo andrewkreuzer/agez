@@ -8,9 +8,9 @@ const AllocatorError = mem.Allocator.Error;
 const ArrayList = std.ArrayList;
 
 const age = @import("age.zig");
+const armor = @import("armor.zig");
 const Header = age.Header;
 const Version = age.Version;
-const armor = @import("armor.zig");
 const ArmoredReader = armor.ArmoredReader;
 const ArmoredWriter = armor.ArmoredWriter;
 const Key = @import("key.zig").Key;
@@ -216,10 +216,7 @@ pub fn AgeReader(
 
             while (try iter.next()) |line| {
                 line: switch (line.prefix) {
-                    .whitespace => {
-                        self.whitespace = true;
-                        continue;
-                    },
+                    .whitespace => self.whitespace = true,
                     .armor_begin => {
                         self.armored_reader = ArmoredReaderType{ .r = self.r.normal };
                         const areader = self.armored_reader.reader();
@@ -406,14 +403,14 @@ pub fn AgeWriter(comptime WriterType: type) type {
 
         fn writeArmorStartIfNeeded(self: *Self) !void {
             if (!self.armored) return;
-            _ = try self.w.write(armor.armor_begin_marker);
+            _ = try self.w.write(armor.ARMOR_BEGIN_MARKER);
             _ = try self.w.write("\n");
         }
 
         pub fn writeArmorEndIfNeeded(self: *Self) !void {
             if (!self.armored) return;
             try self.armored_writer.flush();
-            _ = try self.w.write(armor.armor_end_marker);
+            _ = try self.w.write(armor.ARMOR_END_MARKER);
             _ = try self.w.write("\n");
         }
 

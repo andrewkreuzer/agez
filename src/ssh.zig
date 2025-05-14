@@ -17,10 +17,11 @@ const Parser = ssh.Parser;
 const PemDecoder = ssh.PemDecoder;
 const Rsa = ssh.Rsa;
 
-pub const ed25519_stanza_arg = "ssh-ed25519";
-pub const rsa_stanza_arg = "ssh-rsa";
-const ed25519_key_label = "age-encryption.org/v1/ssh-ed25519";
-const rsa_key_label = "age-encryption.org/v1/ssh-rsa";
+pub const ED25519_STANZA_ARG = "ssh-ed25519";
+pub const RSA_STANZA_ARG = "ssh-rsa";
+
+const ED25519_KEY_LABEL = "age-encryption.org/v1/ssh-ed25519";
+const RSA_KEY_LABEL = "age-encryption.org/v1/ssh-rsa";
 
 pub const PublicKey = union(enum) {
     ed25519: Ed25519.PublicKey,
@@ -79,7 +80,7 @@ pub const rsa = struct {
         const file_key: Key = .{
             .slice = .{ .k = try allocator.alloc(u8, 16) }
         };
-        try private_key.decryptOaep(file_key.slice.k, b, rsa_key_label);
+        try private_key.decryptOaep(file_key.slice.k, b, RSA_KEY_LABEL);
 
 
         return file_key;
@@ -90,7 +91,7 @@ pub const rsa = struct {
 
         var buf: []u8 = try allocator.alloc(u8, public_key.size());
         defer allocator.free(buf);
-        const n = try public_key.encryptOaep(buf, file_key.key().bytes, rsa_key_label);
+        const n = try public_key.encryptOaep(buf, file_key.key().bytes, RSA_KEY_LABEL);
         const encoded_buf: []u8 = try allocator.alloc(u8, Encoder.calcSize(n));
         defer allocator.free(encoded_buf);
         const encoded = Encoder.encode(encoded_buf, buf[0..n]);
@@ -230,7 +231,7 @@ pub const ed25519 = struct {
             var tweak: [32]u8 = undefined;
             hkdf.expand(
                 &tweak,
-                ed25519_key_label,
+                ED25519_KEY_LABEL,
                 hkdf.extract(&pk_ssh, &[_]u8{})
             );
             break :blk try X25519.scalarmult(
@@ -244,7 +245,7 @@ pub const ed25519 = struct {
         @memcpy(salt[32..], &rpk);
 
         const k = hkdf.extract(&salt, &shared_secret);
-        hkdf.expand(&key, ed25519_key_label, k);
+        hkdf.expand(&key, ED25519_KEY_LABEL, k);
 
         const tag_start = file_key_enc.len - ChaCha20Poly1305.tag_length;
         @memcpy(&tag, file_key_enc[tag_start..]);
@@ -328,7 +329,7 @@ pub const ed25519 = struct {
             var tweak: [32]u8 = undefined;
             hkdf.expand(
                 &tweak,
-                ed25519_key_label,
+                ED25519_KEY_LABEL,
                 hkdf.extract(&pk_ssh, &[_]u8{})
             );
             break :blk try X25519.scalarmult(
@@ -342,7 +343,7 @@ pub const ed25519 = struct {
         @memcpy(salt[32..], &rpk);
 
         const k = hkdf.extract(&salt, &shared_secret);
-        hkdf.expand(&key, ed25519_key_label, k);
+        hkdf.expand(&key, ED25519_KEY_LABEL, k);
 
         ChaCha20Poly1305.encrypt(file_key_enc[0..16], &tag, file_key.key().bytes, &ad, nonce, key);
 

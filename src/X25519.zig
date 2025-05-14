@@ -8,11 +8,12 @@ const bech32 = @import("bech32.zig");
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
 
-pub const stanza_arg = "X25519";
-pub const bech32_hrp_private = "AGE-SECRET-KEY-";
-const bech32_hrp_public = "age";
-pub const bech32_max_len = 90;
-const key_label = "age-encryption.org/v1/X25519";
+pub const STANZA_ARG = "X25519";
+pub const BECH32_HRP_PRIVATE = "AGE-SECRET-KEY-";
+pub const BECH32_HRP_PUBLIC = "age";
+pub const BECH32_MAX_LEN = 90;
+
+const KEY_LABEL = "age-encryption.org/v1/X25519";
 
 pub fn toStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
     var buf: [97]u8 = undefined;
@@ -31,7 +32,7 @@ pub fn toStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
 
 pub fn fromPublicKey(allocator: Allocator, s: []const u8, file_key: Key) !Recipient {
     var recipient_buf: [90]u8 = undefined;
-    const decoded = try bech32.decode(&recipient_buf, bech32_hrp_public, s);
+    const decoded = try bech32.decode(&recipient_buf, BECH32_HRP_PUBLIC, s);
 
     const public_key: Key = .{
         .slice = .{ .k = try allocator.alloc(u8, 32) }
@@ -49,7 +50,7 @@ pub fn fromPrivateKey(allocator: Allocator, s: []const u8, file_key: Key) !Recip
     var secret_key: [32]u8 = undefined;
     defer std.crypto.utils.secureZero(u8, &secret_key);
 
-    const decoded = try bech32.decode(&recipient_buf, bech32_hrp_private, s);
+    const decoded = try bech32.decode(&recipient_buf, BECH32_HRP_PRIVATE, s);
     _ = try bech32.convertBits(&secret_key, decoded.data, 5, 8, false);
     const pk = try X25519.recoverPublicKey(secret_key);
     const public_key: Key = try Key.init(allocator, pk);
@@ -92,7 +93,7 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
     const ad = [_]u8{};
 
     // space to decode the recipients bech32 identity
-    var identity_buf: [bech32_max_len]u8 = undefined;
+    var identity_buf: [BECH32_MAX_LEN]u8 = undefined;
 
     if (args.len != 1) {
         return error.InvalidRecipientArgs;
@@ -114,7 +115,7 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
         return error.InvalidX25519Body;
     };
 
-    const Bech32 = bech32.decode(&identity_buf, bech32_hrp_private, identity) catch {
+    const Bech32 = bech32.decode(&identity_buf, BECH32_HRP_PRIVATE, identity) catch {
         return error.InvalidX25519Identity;
     };
     _ = try bech32.convertBits(&x25519_secret_key, Bech32.data, 5, 8, false);
@@ -128,7 +129,7 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
     @memcpy(salt[32..], &public_key);
 
     const k = hkdf.extract(&salt, &shared_secret);
-    hkdf.expand(&key, key_label, k);
+    hkdf.expand(&key, KEY_LABEL, k);
 
     const tag_start = file_key_enc.len - ChaCha20Poly1305.tag_length;
     @memcpy(&tag, file_key_enc[tag_start..]);
@@ -199,7 +200,7 @@ pub fn wrap(allocator: Allocator, file_key: Key, public_key: Key) !Recipient {
     @memcpy(salt[32..], pk);
 
     const k = hkdf.extract(&salt, &shared_secret);
-    hkdf.expand(&key, key_label, k);
+    hkdf.expand(&key, KEY_LABEL, k);
 
     ChaCha20Poly1305.encrypt(file_key_enc[0..16], &tag, file_key.key().bytes, &ad, nonce, key);
 

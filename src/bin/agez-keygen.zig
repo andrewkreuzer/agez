@@ -175,7 +175,7 @@ pub fn main() !void {
             var buf_recipient_b32: [90]u8 = undefined;
 
             try reader.streamUntilDelimiter(line_writer, '\n', buf_line.len);
-            const b32 = try bech32.decode(&buf_id, X25519.bech32_hrp_private, line_fbs.getWritten());
+            const b32 = try bech32.decode(&buf_id, X25519.BECH32_HRP_PRIVATE, line_fbs.getWritten());
             _ = try bech32.convertBits(&buf_bytes, b32.data, 5, 8, false);
 
             const pk = try std.crypto.dh.X25519.recoverPublicKey(buf_bytes[0..32].*);
