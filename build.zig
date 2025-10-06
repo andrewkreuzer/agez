@@ -16,9 +16,11 @@ pub fn build(b: *std.Build) !void {
 
     const exe = b.addExecutable(.{
         .name = "agez",
-        .root_source_file = b.path("src/bin/agez.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bin/agez.zig"),
+            .target = target,
+            .optimize = optimize,
+        })
     });
     exe.root_module.addImport("agez", libagez_mod);
 
@@ -26,9 +28,11 @@ pub fn build(b: *std.Build) !void {
 
     const exe_keygen = b.addExecutable(.{
         .name = "agez-keygen",
-        .root_source_file = b.path("src/bin/agez-keygen.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bin/agez-keygen.zig"),
+            .target = target,
+            .optimize = optimize,
+        })
     });
     exe_keygen.root_module.addImport("agez", libagez_mod);
 
@@ -45,17 +49,21 @@ pub fn build(b: *std.Build) !void {
     run_keygen_step.dependOn(&run_keygen_cmd.step);
 
     const lib_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/lib.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
     test_step.dependOn(&run_lib_unit_tests.step);
 
     const testkit = b.addTest(.{
-        .root_source_file = b.path("tests/testkit.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/testkit.zig"),
+            .target = target,
+            .optimize = optimize,
+        })
     });
     testkit.root_module.addImport("agez", libagez_mod);
     const run_testkit = b.addRunArtifact(testkit);

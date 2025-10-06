@@ -1,24 +1,31 @@
 const std = @import("std");
-const mem = std.mem;
 const assert = std.debug.assert;
-const io = std.io;
+const Io = std.Io;
+const mem = std.mem;
 const window = std.mem.window;
 
 pub const ARMOR_BEGIN_MARKER = "-----BEGIN AGE ENCRYPTED FILE-----";
 pub const ARMOR_END_MARKER = "-----END AGE ENCRYPTED FILE-----";
 
-const ARMOR_COLUMNS_PER_LINE = 64;
-const ARMOR_BYTES_PER_LINE = ARMOR_COLUMNS_PER_LINE / 4 * 3;
+// Follows RFC7468 (https://www.rfc-editor.org/rfc/rfc7468)
+// Generators MUST wrap the base64-encoded lines so that each line
+// consists of exactly 64 characters except for the final line, which
+// will encode the remainder of the data (within the 64-character line
+// boundary), and they MUST NOT emit extraneous whitespace.  Parsers MAY
+// handle other line sizes.  These requirements are consistent with PEM
+// [RFC1421].
+pub const ARMOR_COLUMNS_PER_LINE = 64;
+pub const ARMOR_BYTES_PER_LINE = ARMOR_COLUMNS_PER_LINE / 4 * 3;
 
-const ARMOR_END_MAP = blk: {
-    var map = [_]u8{0} ** 128;
-    for (ARMOR_END_MARKER, 1..) |c, i| {
-        map[c] = i;
-    }
-    break :blk map;
+pub const ArmorError = error{
+    ArmorInvalidMarker,
+    ArmorInvalidLine,
+    ArmorInvalidLineLength,
+    ArmorNoEndMarker,
+    ArmorDecodeError,
 };
 
-pub fn isArmorBegin(line: []u8) !bool {
+pub fn isArmorBegin(line: []u8) error{ArmorInvalidMarker}!bool {
     if (line.len < ARMOR_BEGIN_MARKER.len) return false;
     const slice = line[0..ARMOR_BEGIN_MARKER.len];
     const prefix = ARMOR_BEGIN_MARKER[0..5];
@@ -29,184 +36,214 @@ pub fn isArmorBegin(line: []u8) !bool {
     return full_match;
 }
 
-pub fn isArmorEnd(line: []u8) bool {
-    return std.mem.eql(u8, line, ARMOR_END_MARKER);
+pub fn isArmorEnd(line: []u8) error{ArmorInvalidMarker}!bool {
+    if (line.len < ARMOR_END_MARKER.len) return false;
+    const slice = line[0..ARMOR_END_MARKER.len];
+    const prefix = ARMOR_END_MARKER[0..5];
+    const full_match = std.mem.eql(u8, slice, ARMOR_END_MARKER);
+    if (std.mem.eql(u8, slice[0..5], prefix) and !full_match) {
+        return error.ArmorInvalidMarker;
+    }
+    return full_match;
 }
 
-pub fn ArmoredReader(comptime ReaderType: type) type {
-    return struct {
-        r: ReaderType,
-        buf: [ARMOR_BYTES_PER_LINE]u8 = undefined,
-        encoded_buf: [ARMOR_COLUMNS_PER_LINE + 1]u8 = undefined,
-        start: usize = 0,
-        end: usize = 0,
+const Decoder = std.base64.standard.Decoder;
+const Encoder = std.base64.standard.Encoder;
 
-        marker_found: bool = false,
+pub const Reader = struct {
+    const Self = @This();
+    input: *Io.Reader,
+    interface: Io.Reader,
+    begin_marker: bool = false,
+    end_marker: bool = false,
+    decode_err: ?anyerror = null,
+    armor_err: ?ArmorError = null,
 
-        pub const Error = ReaderType.Error || ArmorError;
-        pub const NoEofError = Error || error{
-            EndOfStream,
+    pub const MIN_BUFFER_SIZE = ARMOR_COLUMNS_PER_LINE + 10;
+
+    pub fn init(input: *Io.Reader, buffer: []u8) Self {
+        return Self{
+            .input = input,
+            .interface = .{
+                .vtable = &.{
+                    .stream = Reader.stream,
+                },
+                .buffer = buffer,
+                .seek = 0,
+                .end = 0,
+            },
         };
-        pub const Reader = io.Reader(*Self, Error, read);
+    }
 
-        const Decoder = std.base64.standard.Decoder;
+    fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
+        const ar: *Self = @alignCast(@fieldParentPtr("interface", r));
+        const in = ar.input;
 
-        const Self = @This();
+        assert(ar.armor_err == null);
+        assert(ar.decode_err == null);
+        if (in.buffer.len == 0)
+            return error.EndOfStream;
 
-        fn fill(self: *Self) Error!usize {
-            if (self.marker_found) return 0;
+        var line = in.takeDelimiterExclusive('\n') catch |err| switch (err) {
+            error.StreamTooLong => return error.ReadFailed,
+            else => |e| return e,
+        };
 
-            var buf: [ARMOR_COLUMNS_PER_LINE]u8 = undefined;
-            var n = try self.r.readAll(&buf);
-            if (n == 0) return 0;
+        if (line.len > 0 and line[line.len - 1] == '\r') line = line[0..line.len - 1];
+        if (line.len > ARMOR_COLUMNS_PER_LINE) {
+            ar.armor_err = error.ArmorInvalidLineLength;
+            return error.ReadFailed;
+        }
 
-            var slice = buf[0..n];
+        if (!ar.begin_marker) {
+            if (isArmorBegin(line) catch |e| {
+                ar.armor_err = e;
+                return error.ReadFailed;
+            }) { ar.begin_marker = true; return 0; }
 
-            // if we read less than 64 bytes the end
-            // marker must be at the end of the buffer
-            if (n != ARMOR_COLUMNS_PER_LINE) {
-                if (n < ARMOR_END_MARKER.len) return error.ArmorNoEndMarker;
-                if (mem.indexOf(u8, slice, ARMOR_END_MARKER)) |start| {
-                    var s = start;
-                    if (s == 0) return 0;
-                    if (slice[s-1] == '\n') s -= 1;
-                    if (slice[s-1] == '\r') s -= 1;
-                    slice = slice[0..s];
-                } else return error.ArmorNoEndMarker;
+            ar.armor_err = error.ArmorInvalidLine;
+            return error.ReadFailed;
+        }
 
-            } else {
-                // our buffer is full we need to check if
-                // the last character is in the end marker
-                // and walk our way back to the start if so
-                const b = slice[n-1];
-                var pos = ARMOR_END_MAP[b];
-                if (pos != 0) {
-                    const start = n - pos;
-                    const maybe_marker = slice[start..n];
-                    while (pos > 0) {
-                        pos -= 1;
-                        const c = maybe_marker[pos];
-                        // TODO: confirm end marker is correct
-                        // currently we just assume it is
-                        if (pos < ARMOR_END_MARKER.len and c == '\n') {
-                            self.marker_found = true;
-                            if (pos > 0 and slice[pos-1] == '\r') pos -= 1;
-                            slice = buf[0..start+pos];
-                        }
-                        if (ARMOR_END_MAP[c] == 0) break;
-                    }
+        if (ar.begin_marker and !ar.end_marker) {
+            if (line.len == 0) {
+                ar.armor_err = error.ArmorInvalidLine;
+                return error.ReadFailed;
+            }
+        }
+
+        if (!ar.end_marker) {
+            if (isArmorEnd(line) catch |e| {
+                ar.armor_err = e;
+                return error.ReadFailed;
+            }) { ar.end_marker = true; return 0; }
+        } else {
+            const whitespaceFn = std.ascii.isWhitespace;
+            for (line) |b| {
+                if (!whitespaceFn(b)) {
+                    ar.armor_err = error.ArmorInvalidLine;
+                    return error.ReadFailed;
                 }
             }
+            return 0;
+        }
 
-            // if we didn't find the end marker
-            // check that next byte is a newline
-            if (!self.marker_found) {
-                var c = self.r.readByte() catch 0;
-                if (c == '\r') c = self.r.readByte() catch 0;
-                if (c != 0 and c != '\n') return error.ArmorInvalidLine;
+        const n = Decoder.calcSizeForSlice(line) catch |e| {
+            ar.decode_err = e;
+            ar.armor_err = error.ArmorInvalidLine;
+            return error.ReadFailed;
+        };
+        const dest = limit.slice(try w.writableSliceGreedy(n));
+
+        Decoder.decode(dest[0..n], line) catch |e| switch (e) {
+            else => { ar.decode_err = e; return error.ReadFailed; },
+            error.InvalidCharacter,
+            error.InvalidPadding => {
+                ar.decode_err = e;
+                ar.armor_err = error.ArmorInvalidLine;
+                return error.ReadFailed;
             }
-
-            n = Decoder.calcSizeForSlice(slice) catch {
-                return error.ArmorDecodeError;
-            };
-            Decoder.decode(self.buf[0..n], slice) catch {
-                return error.ArmorDecodeError;
-            };
-
-            return n;
-        }
-
-        pub fn read(self: *Self, dest: []u8) Error!usize {
-            var current = self.buf[self.start..self.end];
-            if (current.len != 0) {
-                const n = @min(dest.len, current.len);
-                @memcpy(dest[0..n], current[0..n]);
-                self.start += n;
-                return n;
-            }
-
-            self.end = try self.fill();
-            const n = @min(dest.len, self.end);
-            @memcpy(dest[0..n], self.buf[0..n]);
-            self.start = n;
-            return n;
-        }
-
-        pub fn reader(self: *Self) Reader {
-            return .{ .context = self };
-        }
-    };
-}
-
-pub fn ArmoredWriter(comptime WriterType: type) type {
-    return struct {
-        w: WriterType,
-        decoded_buf: [ARMOR_BYTES_PER_LINE]u8 = undefined,
-        written: usize = 0,
-        end: usize = 0,
-
-        pub const Error = WriterType.Error;
-        pub const Writer = io.Writer(*Self, Error, write);
-
-        const Encoder = std.base64.standard.Encoder;
-
-        const Self = @This();
-
-        pub fn write(self: *Self, bytes: []const u8) Error!usize {
-            if (self.end + bytes.len < self.decoded_buf.len) {
-                @memcpy(self.decoded_buf[self.end..][0..bytes.len], bytes);
-                self.end += bytes.len;
-                try self.flushIfNeeded();
-                return bytes.len;
-            }
-
-            var b = bytes;
-            while (b.len != 0) {
-                const n = @min(self.decoded_buf.len - self.end, b.len);
-                @memcpy(self.decoded_buf[self.end..][0..n], b[0..n]);
-                self.end += n;
-                b = b[n..];
-                try self.flushIfNeeded();
-            }
-            return self.end;
-        }
-
-        fn flushIfNeeded(self: *Self) Error!void {
-            if (self.end != self.decoded_buf.len) return;
-            try self.flush();
-        }
-
-        pub fn flush(self: *Self) Error!void {
-            var buf: [ARMOR_COLUMNS_PER_LINE]u8 = undefined;
-            const n = Encoder.calcSize(self.decoded_buf[0..self.end].len);
-            _ = Encoder.encode(buf[0..n], self.decoded_buf[0..self.end]);
-            try self.w.writeAll(buf[0..n]);
-            self.written += n + try self.w.write("\n");
-            self.end = 0;
-        }
-
-        pub fn writer(self: *Self) Writer {
-            return .{ .context = self };
-        }
-    };
-}
-
-pub const ArmorError = error{
-    ArmorInvalidMarker,
-    ArmorInvalidLine,
-    ArmorInvalidLineLength,
-    ArmorNoEndMarker,
-    ArmorDecodeError,
+        };
+        w.advance(n);
+        return n;
+    }
 };
 
-test "encode decode" {
+pub const Writer = struct {
+    const Self = @This();
+    output: *Io.Writer,
+    interface: Io.Writer,
+
+    pub fn init(w: *Io.Writer, buffer: []u8) Self {
+        assert(buffer.len >= 48);
+        return Self{
+            .output = w,
+            .interface = .{
+                .vtable = &.{
+                    .drain = Writer.drain,
+                },
+                .buffer = buffer,
+                .end = 0,
+            }
+        };
+    }
+
+    pub fn begin(self: *Self) error{WriteFailed}!void {
+        return self.output.writeAll(ARMOR_BEGIN_MARKER ++ "\n");
+    }
+
+    pub fn finish(self: *Self) error{WriteFailed}!void {
+        if (self.interface.end != 0) {
+            const end = self.interface.end;
+            const buffer = self.interface.buffer[0..end];
+            var iter = window(u8, buffer, 48, 48);
+            while (iter.next()) |line| {
+                const buf = try self.output.writableSliceGreedy(line.len);
+                const result = Encoder.encode(buf, line);
+                self.output.advance(result.len);
+                _ = try self.output.write("\n");
+            }
+            self.interface.end = 0;
+        }
+        return self.output.writeAll(ARMOR_END_MARKER ++ "\n");
+    }
+
+    fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) error{WriteFailed}!usize {
+        _ = splat;
+        const aw: *Writer = @alignCast(@fieldParentPtr("interface", w));
+        const output: *Io.Writer = aw.output;
+
+        var acc: usize = 0;
+        var i: usize = 0;
+        var n: usize = 0;
+        while (i < data.len) {
+            var remaining: usize = w.buffer.len - w.end;
+            if (remaining != 0) {
+                const slice = data[i][n..];
+                const to_copy = @min(remaining, slice.len);
+                @memcpy(w.buffer[w.end..][0..to_copy], slice[0..to_copy]);
+                acc += to_copy;
+                w.end += to_copy;
+                remaining -= to_copy;
+                if (to_copy == slice.len) {
+                    i += 1;
+                    n = 0;
+                } else {
+                    n += to_copy;
+                }
+            }
+            var iter = window(u8, w.buffer[0..w.end], 48, 48);
+            while (iter.next()) |line| {
+                if (line.len < 48) {
+                    @memmove(w.buffer[0..line.len], line);
+                    remaining = line.len;
+                    break;
+                }
+                const buf = try output.writableSliceGreedy(line.len);
+                const result = Encoder.encode(buf, line);
+                output.advance(result.len);
+                _ = try output.write("\n");
+            }
+            // buffer could still contain residual
+            // data that is not a full line we will
+            // flush it when finish is called
+            w.end = remaining;
+        }
+
+        return acc;
+    }
+};
+
+test Reader {
     const t = std.testing;
     const words_encoded =
+        \\-----BEGIN AGE ENCRYPTED FILE-----
         \\YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB4cWM5Vno0Q1dicFdRaFJ6
         \\cXRWRlRSS1Bnc29SOHdENmtTdTBYN1RvTkhzCjVkbzZpTzh6MnEwWHhEN2dSMURV
         \\bWZCb2hXUCtzaHBrK2pZcHhsTS92ck0KLS0tICs5Y2tuQktUcEw5Snh6bTB0M0Yv
         \\K1lQb1IvUlIzTXc3ZmhTYU0yL2NJ
         \\-----END AGE ENCRYPTED FILE-----
+        \\
         ;
     const words =
         \\age-encryption.org/v1
@@ -214,66 +251,82 @@ test "encode decode" {
         \\5do6iO8z2q0XxD7gR1DUmfBohWP+shpk+jYpxlM/vrM
         \\--- +9cknBKTpL9Jxzm0t3F/+YPoR/RR3Mw7fhSaM2/cI
         ;
-    var fbs_decode = std.io.fixedBufferStream(words_encoded);
-    const words_reader = fbs_decode.reader();
-    var armored_reader = ArmoredReader(@TypeOf(words_reader)){.r = words_reader };
-    const reader = armored_reader.reader();
+
+    var r: Io.Reader = .fixed(words_encoded);
+    var ar: Reader = .init(&r, &.{});
     var buf_decode: [words.len]u8 = undefined;
-    var n = try reader.readAll(&buf_decode);
+    try ar.interface.readSliceAll(&buf_decode);
 
-    try t.expectEqualSlices(u8, words, buf_decode[0..n]);
-
-    var buf_encode: [words_encoded.len]u8 = undefined;
-    var fbs_encode = std.io.fixedBufferStream(&buf_encode);
-    const words_writer = fbs_encode.writer();
-    var armored_writer = ArmoredWriter(@TypeOf(words_writer)){.w = words_writer };
-    const writer = armored_writer.writer();
-    n = try writer.write(words);
-    try armored_writer.flush();
-    _ = try fbs_encode.write("-----END AGE ENCRYPTED FILE-----");
-
-    try t.expectEqualSlices(u8, words_encoded, buf_encode[0..]);
+    try t.expectEqualSlices(u8, words, buf_decode[0..]);
 }
 
-test "invalid header" {
+test Writer {
     const t = std.testing;
     const words_encoded =
-        \\ Header: not valid
-        \\
+        \\-----BEGIN AGE ENCRYPTED FILE-----
         \\YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB4cWM5Vno0Q1dicFdRaFJ6
         \\cXRWRlRSS1Bnc29SOHdENmtTdTBYN1RvTkhzCjVkbzZpTzh6MnEwWHhEN2dSMURV
         \\bWZCb2hXUCtzaHBrK2pZcHhsTS92ck0KLS0tICs5Y2tuQktUcEw5Snh6bTB0M0Yv
         \\K1lQb1IvUlIzTXc3ZmhTYU0yL2NJ
         \\-----END AGE ENCRYPTED FILE-----
+        \\
         ;
-    var fbs_decode = std.io.fixedBufferStream(words_encoded);
-    const words_reader = fbs_decode.reader();
-    var armored_reader = ArmoredReader(@TypeOf(words_reader)){.r = words_reader };
-    const reader = armored_reader.reader();
-    var buf_decode: [128]u8 = undefined;
-    try t.expectError(error.ArmorInvalidLine, reader.readAll(&buf_decode));
-
-}
-
-test "flush" {
-    const t = std.testing;
     const words =
-        \\a small string
+        \\age-encryption.org/v1
+        \\-> X25519 xqc9Vz4CWbpWQhRzqtVFTRKPgsoR8wD6kSu0X7ToNHs
+        \\5do6iO8z2q0XxD7gR1DUmfBohWP+shpk+jYpxlM/vrM
+        \\--- +9cknBKTpL9Jxzm0t3F/+YPoR/RR3Mw7fhSaM2/cI
         ;
 
-    var buf_encode: [128]u8 = undefined;
-    var fbs_encode = std.io.fixedBufferStream(&buf_encode);
-    const words_writer = fbs_encode.writer();
-    var armored_writer = ArmoredWriter(@TypeOf(words_writer)){.w = words_writer };
-    const writer = armored_writer.writer();
+    var buf_encode: [words_encoded.len]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf_encode);
+    var buf: [48]u8 = undefined;
+    var aw: Writer = .init(&w, &buf);
+    try aw.begin();
+    try aw.interface.writeAll(words);
+    try aw.finish();
 
-    _ = try writer.write(words);
-    try t.expect(armored_writer.written == 0);
-    try armored_writer.flush();
-    try t.expectEqualSlices(u8, "YSBzbWFsbCBzdHJpbmc=\n", buf_encode[0..armored_writer.written]);
+    try t.expectEqualSlices(u8, words_encoded, buf_encode[0..]);
 }
 
-test "fill" {
+test "garbage before begin" {
+    const t = std.testing;
+    const words_encoded =
+        \\garbage
+        \\-----BEGIN AGE ENCRYPTED FILE-----
+        \\YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB4cWM5Vno0Q1dicFdRaFJ6
+        \\cXRWRlRSS1Bnc29SOHdENmtTdTBYN1RvTkhzCjVkbzZpTzh6MnEwWHhEN2dSMURV
+        \\bWZCb2hXUCtzaHBrK2pZcHhsTS92ck0KLS0tICs5Y2tuQktUcEw5Snh6bTB0M0Yv
+        \\K1lQb1IvUlIzTXc3ZmhTYU0yL2NJ
+        \\-----END AGE ENCRYPTED FILE-----
+        \\
+        ;
+    var r: std.Io.Reader = .fixed(words_encoded);
+    var ar: Reader = .init(&r, &.{});
+    var buf_decode: [8]u8 = undefined;
+    try t.expectError(error.ReadFailed, ar.interface.readSliceAll(&buf_decode));
+    try std.testing.expectError(error.ArmorInvalidLine, ar.armor_err orelse {});
+}
+
+test "garbage after begin" {
+    const t = std.testing;
+    const words_encoded =
+        \\-----BEGIN AGE ENCRYPTED FILE-----
+        \\YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB4cWM5Vno0Q1dicFdRaFJ6
+        \\cXRWRlRSS1Bnc29SOHdENmtTdTBYN1RvTkhzCjVkbzZpTzh6MnEwWHhEN2dSMURV
+        \\bWZCb2hXUCtzaHBrK2pZcHhsTS92ck0KLS0tICs5Y2tuQktUcEw5Snh6bTB0M0Yv
+        \\K1lQb1IvUlIzTXc3ZmhTYU0yL2NJ
+        \\-----END AGE ENCRYPTED FILE-----
+        \\garbage
+        ;
+    var r: std.Io.Reader = .fixed(words_encoded);
+    var ar: Reader = .init(&r, &.{});
+    var buf_decode: [256]u8 = undefined;
+    try t.expectError(error.ReadFailed, ar.interface.readSliceAll(&buf_decode));
+    try std.testing.expectError(error.ArmorInvalidLine, ar.armor_err orelse {});
+}
+
+test "decode" {
     const t = std.testing;
     const cases = [_]struct {
         data: []const u8,
@@ -281,7 +334,8 @@ test "fill" {
     }{
         .{ .data = "" , .expect = "" },
         .{
-            .data = 
+            .data =
+                \\-----BEGIN AGE ENCRYPTED FILE-----
                 \\IkxvcmVtIGlwc3VtIGRvbG9yIHNpdCBhbWV0LCBjb25zZWN0ZXR1ciBhZGlwaXNj
                 \\aW5nIGVsaXQsCnNlZCBkbyBlaXVzbW9kIHRlbXBvciBpbmNpZGlkdW50IHV0IGxh
                 \\Ym9yZSBldCBkb2xvcmUgbWFnbmEKYWxpcXVhLiBVdCBlbmltIGFkIG1pbmltIHZl
@@ -293,6 +347,7 @@ test "fill" {
                 \\c3VudCBpbiBjdWxwYSBxdWkgb2ZmaWNpYSBkZXNlcnVudCBtb2xsaXQKYW5pbSBp
                 \\ZCBlc3QgbGFib3J1bS4i
                 \\-----END AGE ENCRYPTED FILE-----
+                \\
             , .expect =
                 \\"Lorem ipsum dolor sit amet, consectetur adipiscing elit,
                 \\sed do eiusmod tempor incididunt ut labore et dolore magna
@@ -305,31 +360,107 @@ test "fill" {
         },
         .{
             .data =
+                \\-----BEGIN AGE ENCRYPTED FILE-----
                 \\YWdlLWVuY3J5cHRpb24ub3JnL3Yx
                 \\-----END AGE ENCRYPTED FILE-----
+                \\
             , .expect = "age-encryption.org/v1",
         },
         .{
             .data =
+                \\-----BEGIN AGE ENCRYPTED FILE-----
                 \\YSBzdHJpbmcgdGhhdCBpcyA0NyBieXRlcyBsb25nIHRvIHRlc3QgZW5kIGNhc2U=
                 \\-----END AGE ENCRYPTED FILE-----
+                \\
             , .expect = "a string that is 47 bytes long to test end case"
         },
         .{
             .data =
+                \\-----BEGIN AGE ENCRYPTED FILE-----
                 \\aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1kUXc0dzlXZ1hjUQ==
                 \\-----END AGE ENCRYPTED FILE-----
+                \\
             , .expect = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         },
     };
     for (cases) |case| {
-        var fbs = std.io.fixedBufferStream(case.data);
-        const fbs_reader = fbs.reader();
-        var armored_reader = ArmoredReader(@TypeOf(fbs_reader)){.r = fbs_reader };
-        const reader = armored_reader.reader();
-        var buf_decode: [512]u8 = undefined;
-        const n = try reader.readAll(&buf_decode);
+        var r: Io.Reader = .fixed(case.data);
+        var ar: Reader = .init(&r, &.{});
+        var buf_decode: [1024]u8 = undefined;
+        const n = try ar.interface.readSliceShort(&buf_decode);
 
         try t.expectEqualSlices(u8, case.expect, buf_decode[0..n]);
+    }
+}
+
+test "encode" {
+    const t = std.testing;
+    const allocator = std.testing.allocator;
+    const cases = [_]struct {
+        data: []const u8,
+        expect: []const u8,
+    }{
+        .{
+            .expect =
+                \\-----BEGIN AGE ENCRYPTED FILE-----
+                \\IkxvcmVtIGlwc3VtIGRvbG9yIHNpdCBhbWV0LCBjb25zZWN0ZXR1ciBhZGlwaXNj
+                \\aW5nIGVsaXQsCnNlZCBkbyBlaXVzbW9kIHRlbXBvciBpbmNpZGlkdW50IHV0IGxh
+                \\Ym9yZSBldCBkb2xvcmUgbWFnbmEKYWxpcXVhLiBVdCBlbmltIGFkIG1pbmltIHZl
+                \\bmlhbSwgcXVpcyBub3N0cnVkIGV4ZXJjaXRhdGlvbgp1bGxhbWNvIGxhYm9yaXMg
+                \\bmlzaSB1dCBhbGlxdWlwIGV4IGVhIGNvbW1vZG8gY29uc2VxdWF0LgpEdWlzIGF1
+                \\dGUgaXJ1cmUgZG9sb3IgaW4gcmVwcmVoZW5kZXJpdCBpbiB2b2x1cHRhdGUgdmVs
+                \\aXQgZXNzZQpjaWxsdW0gZG9sb3JlIGV1IGZ1Z2lhdCBudWxsYSBwYXJpYXR1ci4g
+                \\RXhjZXB0ZXVyIHNpbnQgb2NjYWVjYXQKY3VwaWRhdGF0IG5vbiBwcm9pZGVudCwg
+                \\c3VudCBpbiBjdWxwYSBxdWkgb2ZmaWNpYSBkZXNlcnVudCBtb2xsaXQKYW5pbSBp
+                \\ZCBlc3QgbGFib3J1bS4i
+                \\-----END AGE ENCRYPTED FILE-----
+                \\
+            , .data =
+                \\"Lorem ipsum dolor sit amet, consectetur adipiscing elit,
+                \\sed do eiusmod tempor incididunt ut labore et dolore magna
+                \\aliqua. Ut enim ad minim veniam, quis nostrud exercitation
+                \\ullamco laboris nisi ut aliquip ex ea commodo consequat.
+                \\Duis aute irure dolor in reprehenderit in voluptate velit esse
+                \\cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat
+                \\cupidatat non proident, sunt in culpa qui officia deserunt mollit
+                \\anim id est laborum."
+        },
+        .{
+            .expect =
+                \\-----BEGIN AGE ENCRYPTED FILE-----
+                \\YWdlLWVuY3J5cHRpb24ub3JnL3Yx
+                \\-----END AGE ENCRYPTED FILE-----
+                \\
+            , .data = "age-encryption.org/v1",
+        },
+        .{
+            .expect =
+                \\-----BEGIN AGE ENCRYPTED FILE-----
+                \\YSBzdHJpbmcgdGhhdCBpcyA0NyBieXRlcyBsb25nIHRvIHRlc3QgZW5kIGNhc2U=
+                \\-----END AGE ENCRYPTED FILE-----
+                \\
+            , .data = "a string that is 47 bytes long to test end case"
+        },
+        .{
+            .expect =
+                \\-----BEGIN AGE ENCRYPTED FILE-----
+                \\aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1kUXc0dzlXZ1hjUQ==
+                \\-----END AGE ENCRYPTED FILE-----
+                \\
+            , .data = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        },
+    };
+    for (cases) |case| {
+        var buf_encode: []u8 = try allocator.alloc(u8, case.expect.len);
+        defer allocator.free(buf_encode);
+        var w: Io.Writer = .fixed(buf_encode);
+        var buf: [48]u8 = undefined;
+        var aw: Writer = .init(&w, &buf);
+        try aw.begin();
+        _ = try aw.interface.write(case.data);
+        try aw.finish();
+        try w.flush();
+
+        try t.expectEqualSlices(u8, case.expect, buf_encode[0..w.end]);
     }
 }

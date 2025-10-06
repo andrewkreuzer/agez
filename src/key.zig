@@ -46,7 +46,7 @@ pub const Key = union(KeyType) {
     pub fn deinit(self: *const Self, allocator: Allocator) void {
         switch (self.*) {
             KeyType.slice => |*slice| {
-                std.crypto.utils.secureZero(u8, slice.k);
+                std.crypto.secureZero(u8, slice.k);
                 allocator.free(slice.k);
                 if (slice.pk) |pk| { allocator.free(pk); }
             },

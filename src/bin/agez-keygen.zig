@@ -1,8 +1,10 @@
 const std = @import("std");
 const exit = std.posix.exit;
+const Io = std.Io;
 const time = std.time;
 const Allocator = std.mem.Allocator;
 const ArgIterator = std.process.ArgIterator;
+const File = std.fs.File;
 
 const agez = @import("agez");
 const X25519 = agez.X25519;
@@ -41,7 +43,9 @@ const Args = struct {
     }
 
     pub fn printHelp(_: *Self, allocator: Allocator) !void {
-        const stdout = std.io.getStdOut().writer();
+        var buf: [1024]u8 = undefined;
+        var stdout_writer = std.fs.File.stdout().writer(&buf);
+        const stdout = &stdout_writer.interface;
 
         const header =
             \\agez - age encryption
@@ -65,16 +69,17 @@ const Args = struct {
 
         // this is completely unnecessary, but I wanted to try it out
         const fields = @typeInfo(Self).@"struct".fields;
-        var options = try std.ArrayList(u8).initCapacity(allocator, fields.len);
-        const writer = options.writer();
+        var options: std.io.Writer.Allocating = .init(allocator);
+        var writer = options.writer;
         inline for (fields) |field| {
             if (field.type != Arg)  continue;
             if (field.defaultValue()) |arg| {
-                if (arg.short == null) continue;
-                const spacing = arg_spacing - arg.short.?.len + 2;
-                try std.fmt.format(writer, "    {s}{s}{s}\n",
+                if (arg.short == null or arg.long == null) continue;
+                const spacing = arg_spacing - arg.long.?.len + 2;
+                try writer.print("    {s}, {s}{s}{s}\n",
                     .{
                         arg.short.?,
+                        arg.long.?,
                         " " ** spacing,
                         arg.description.?
                     }
@@ -86,7 +91,7 @@ const Args = struct {
         defer allocator.free(options_text);
 
         // TOOD: footer
-        try std.fmt.format(stdout,
+        try stdout.print(
             \\{s}
             \\
             \\Options:
@@ -128,8 +133,8 @@ fn ts() ![22]u8 {
     const hour = day_secs.getHoursIntoDay();
 
     var buf: [22]u8 = undefined;
-    _ = try std.fmt.bufPrint(
-        &buf,
+    var writer: Io.Writer = .fixed(&buf);
+    _ = try writer.print(
         "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}UTC",
         .{
             year,
@@ -154,52 +159,51 @@ pub fn main() !void {
     const _args = try args(allocator);
     if (_args.convert.value()) |convert| {
         var file = try std.fs.cwd().openFile(convert, .{.mode = .read_write});
-        var buf_reader = std.io.bufferedReader(file.reader());
-        var buf_writer = std.io.bufferedWriter(file.writer());
-        const reader = buf_reader.reader();
-        const writer = buf_writer.writer();
+        var reader_buf: [4096]u8 = undefined;
+        var reader: File.Reader = file.reader(&reader_buf);
+        var writer_buf: [4096]u8 = undefined;
+        var writer: File.Writer = file.writer(&writer_buf);
 
-        var recipients = std.ArrayList([]u8).init(allocator);
+        var recipients: std.ArrayList([]u8) = .empty;
         defer {
             for (recipients.items) |r| allocator.free(r);
-            recipients.deinit();
+            recipients.deinit(allocator);
         }
 
         var buf_line: [90]u8 = undefined;
-        var line_fbs = std.io.fixedBufferStream(&buf_line);
-        const line_writer = line_fbs.writer();
+        var line_writer: Io.Writer = .fixed(&buf_line);
         while (true) {
             var buf_id: [90]u8 = undefined;
             var buf_bytes: [90]u8 = undefined;
             var buf_recipient: [90]u8 = undefined;
             var buf_recipient_b32: [90]u8 = undefined;
 
-            try reader.streamUntilDelimiter(line_writer, '\n', buf_line.len);
-            const b32 = try bech32.decode(&buf_id, X25519.BECH32_HRP_PRIVATE, line_fbs.getWritten());
+            _ = try reader.interface.streamDelimiter(&line_writer, '\n');
+            const b32 = try bech32.decode(&buf_id, X25519.BECH32_HRP_PRIVATE, line_writer.buffered());
             _ = try bech32.convertBits(&buf_bytes, b32.data, 5, 8, false);
 
             const pk = try std.crypto.dh.X25519.recoverPublicKey(buf_bytes[0..32].*);
             const n = try bech32.convertBits(&buf_recipient, &pk, 8, 5, true);
             const recipient_bech32 = try bech32.encode(&buf_recipient_b32, "age", buf_recipient[0..n]);
-            try recipients.append(try allocator.dupe(u8, recipient_bech32));
+            try recipients.append(allocator, try allocator.dupe(u8, recipient_bech32));
         }
 
         for (recipients.items) |r| {
-            try writer.writeAll(r);
-            try writer.writeByte('\n');
+            try writer.interface.writeAll(r);
+            try writer.interface.writeByte('\n');
         }
 
-        buf_writer.flush();
+        writer.interface.flush();
         file.close();
     } else {
         var secret: [32]u8 = undefined;
-        defer std.crypto.utils.secureZero(u8, &secret);
+        defer std.crypto.secureZero(u8, &secret);
 
         var recipient_bech32_buf: [90]u8 = undefined;
-        defer std.crypto.utils.secureZero(u8, &recipient_bech32_buf);
+        defer std.crypto.secureZero(u8, &recipient_bech32_buf);
 
         var identity_bech32_buf: [90]u8 = undefined;
-        defer std.crypto.utils.secureZero(u8, &identity_bech32_buf);
+        defer std.crypto.secureZero(u8, &identity_bech32_buf);
 
         _ = std.os.linux.getrandom(
             &secret,
@@ -222,14 +226,18 @@ pub fn main() !void {
         std.debug.print("Public key: {s}\n", .{recipient_bech32});
         if (_args.output.value()) |output| {
             var file = try std.fs.cwd().createFile(output, .{.mode = 0o644});
-            try file.writeAll("# created: ");
-            try file.writeAll(&try ts());
-            try file.writeAll("\n");
-            try file.writeAll("# public key: ");
-            try file.writeAll(recipient_bech32);
-            try file.writeAll("\n");
-            try file.writeAll(id);
-            try file.writeAll("\n");
+            var writer_buf: [128]u8 = undefined;
+            const file_writer = file.writer(&writer_buf);
+            var writer: Io.Writer = file_writer.interface;
+            try writer.writeAll("# created: ");
+            try writer.writeAll(&try ts());
+            try writer.writeAll("\n");
+            try writer.writeAll("# public key: ");
+            try writer.writeAll(recipient_bech32);
+            try writer.writeAll("\n");
+            try writer.writeAll(id);
+            try writer.writeAll("\n");
+            try writer.flush();
         } else {
             std.debug.print("{s}\n", .{id});
         }

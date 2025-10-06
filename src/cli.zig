@@ -120,9 +120,9 @@ pub const Args = struct {
 
     pub fn parse(self: *Self, iter: anytype) anyerror!void {
         var empty = true;
-        var recipients = std.ArrayList([:0]const u8).init(self.allocator.?);
-        var recipients_file = std.ArrayList([:0]const u8).init(self.allocator.?);
-        var identity = std.ArrayList([:0]const u8).init(self.allocator.?);
+        var recipients: std.ArrayList([:0]const u8) = .empty;
+        var recipients_file: std.ArrayList([:0]const u8) = .empty;
+        var identity: std.ArrayList([:0]const u8) = .empty;
         while (iter.next()) |arg| {
             empty = false;
             if (self.help.eql(arg)) {
@@ -149,15 +149,15 @@ pub const Args = struct {
 
             } else if (self.recipient.eql(arg)) {
                 const recipient = iter.next() orelse return error.InvalidArgument;
-                try recipients.append(recipient);
+                try recipients.append(self.allocator.?, recipient);
 
             } else if (self.recipients_file.eql(arg)) {
                 const recipient_file = iter.next() orelse return error.InvalidArgument;
-                try recipients_file.append(recipient_file);
+                try recipients_file.append(self.allocator.?, recipient_file);
 
             } else if (self.identity.eql(arg)) {
                 const id = iter.next() orelse return error.InvalidArgument;
-                try identity.append(id);
+                try identity.append(self.allocator.?, id);
 
             } else if (arg.len > 0) {
                 self.input.type = .{ .positional = arg };
@@ -168,9 +168,9 @@ pub const Args = struct {
             }
         }
 
-        try self.recipient.set(try recipients.toOwnedSlice());
-        try self.recipients_file.set(try recipients_file.toOwnedSlice());
-        try self.identity.set(try identity.toOwnedSlice());
+        try self.recipient.set(try recipients.toOwnedSlice(self.allocator.?));
+        try self.recipients_file.set(try recipients_file.toOwnedSlice(self.allocator.?));
+        try self.identity.set(try identity.toOwnedSlice(self.allocator.?));
 
         if (
             !self.encrypt.flag()
@@ -191,7 +191,9 @@ pub const Args = struct {
     }
 
     pub fn printHelp(_: *Self, allocator: Allocator) !void {
-        const stdout = std.io.getStdOut().writer();
+        var buf: [1024]u8 = undefined;
+        var stdout_writer = std.fs.File.stdout().writer(&buf);
+        const stdout = &stdout_writer.interface;
 
         const header =
             \\agez - age encryption
@@ -216,14 +218,14 @@ pub const Args = struct {
 
         // this is completely unnecessary, but I wanted to try it out
         const fields = @typeInfo(Self).@"struct".fields;
-        var options = try std.ArrayList(u8).initCapacity(allocator, fields.len);
-        const writer = options.writer();
+        var options: std.io.Writer.Allocating = .init(allocator);
+        var writer = options.writer;
         inline for (fields) |field| {
             if (field.type != Arg)  continue;
             if (field.defaultValue()) |arg| {
                 if (arg.short == null or arg.long == null) continue;
                 const spacing = arg_spacing - arg.long.?.len + 2;
-                try std.fmt.format(writer, "    {s}, {s}{s}{s}\n",
+                try writer.print("    {s}, {s}{s}{s}\n",
                     .{
                         arg.short.?,
                         arg.long.?,
@@ -238,7 +240,7 @@ pub const Args = struct {
         defer allocator.free(options_text);
 
         // TOOD: footer
-        try std.fmt.format(stdout,
+        try stdout.print(
             \\{s}
             \\
             \\Options:
