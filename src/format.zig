@@ -1,5 +1,6 @@
 const std = @import("std");
-const io = std.io;
+const assert = std.debug.assert;
+const Io = std.Io;
 const mem = std.mem;
 const hkdf = std.crypto.kdf.hkdf.HkdfSha256;
 const hmac = std.crypto.auth.hmac.sha2.HmacSha256;
@@ -11,8 +12,8 @@ const age = @import("age.zig");
 const armor = @import("armor.zig");
 const Header = age.Header;
 const Version = age.Version;
-const ArmoredReader = armor.ArmoredReader;
-const ArmoredWriter = armor.ArmoredWriter;
+const ArmoredReader = armor.Reader;
+const ArmoredWriter = armor.Writer;
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
 const RecipientType = Recipient.Type;
@@ -26,404 +27,258 @@ const FormatError = error{
     ScryptMultipleRecipients,
 };
 
-pub fn AgeReader(
-    comptime ReaderType: type,
-) type {
-    return struct {
-        const Self = @This();
+const Prefix = enum {
+    const version_prefix = "age";
+    const stanza_prefix = "-> ";
+    const hmac_prefix = "---";
 
-        r: Reader,
-        armored_reader: ArmoredReaderType = undefined,
-        whitespace: bool = false,
+    armor_begin,
+    version,
+    stanza,
+    hmac,
+    end,
+    whitespace,
+    unknown,
 
-        allocator: Allocator,
-
-        const ArmoredReaderType = ArmoredReader(ReaderType);
-        const Reader = union(enum) {
-            armored: ArmoredReaderType.Reader,
-            normal: ReaderType,
-
-            pub fn read(self: *Reader) !usize {
-                return switch (self) {
-                    .armored => |armored| armored.read(),
-                    .normal => |normal| normal.read(),
-                    else => unreachable,
-                };
-            }
-
-            pub fn readAll(self: Reader, buf: []u8) !usize {
-                return switch (self) {
-                    .armored => |armored| armored.readAll(buf),
-                    .normal => |normal| normal.readAll(buf),
-                };
-            }
-
-            pub fn readByte(self: Reader) !u8 {
-                return switch (self) {
-                    .armored => |armored| armored.readByte(),
-                    .normal => |normal| normal.readByte(),
-                };
-            }
-
-            pub fn streamUntilDelimiter(self: Reader, w: anytype, delim: u8, max_size: usize) !void {
-                return switch (self) {
-                    .armored => |armored| armored.streamUntilDelimiter(w, delim, max_size),
-                    .normal => |normal| normal.streamUntilDelimiter(w, delim, max_size),
-                };
-            }
-        };
-
-        const Prefix = enum {
-            const version_prefix = "age";
-            const stanza_prefix = "-> ";
-            const hmac_prefix = "---";
-
-            armor_begin,
-            version,
-            stanza,
-            hmac,
-            end,
-            whitespace,
-            unknown,
-
-            fn match(buf: []u8) Prefix {
-                if (mem.eql(u8, buf, version_prefix)) {
-                    return .version;
-                }
-                if (mem.eql(u8, buf, stanza_prefix)) {
-                    return .stanza;
-                }
-                if (mem.eql(u8, buf, hmac_prefix)) {
-                    return .hmac;
-                }
-                return .unknown;
-            }
-        };
-
-        pub fn Iterator() type {
-            return struct {
-                const Iter = @This();
-
-                const MAX_HEADER_SIZE = 8192;
-                const MAX_LINE_SIZE = 4096;
-
-                r: Reader,
-
-                read: usize = 0,
-                line: usize = 0,
-                header: [MAX_HEADER_SIZE]u8 = undefined,
-                buf: [MAX_LINE_SIZE]u8 = undefined,
-
-                const Line = struct {
-                    prefix: Prefix = .unknown,
-                    bytes: []u8,
-                };
-
-                /// Reads lines of the file,
-                /// keeping track of the line number and header.
-                fn next(iter: *Iter) !?Line {
-                    var fbs = io.fixedBufferStream(&iter.buf);
-                    var r = iter.r;
-                    const w = fbs.writer();
-                    const max_size = iter.buf.len;
-
-                    r.streamUntilDelimiter(w, '\n', max_size) catch |err| switch (err) {
-                        error.EndOfStream => {
-                            return .{ .prefix = .unknown, .bytes = fbs.getWritten(), };
-                        },
-                        error.ArmorDecodeError,
-                        error.ArmorInvalidLine,
-                        error.ArmorInvalidLineLength
-                            => return err,
-                        else => unreachable,
-                    };
-
-                    const line = fbs.getWritten();
-                    if (line.len < 1 or isWhiteSpace(line)) {
-                        return .{ .prefix = Prefix.whitespace, .bytes = line, };
-                    }
-
-                    if (try armor.isArmorBegin(line)) {
-                        return .{ .prefix = Prefix.armor_begin, .bytes = line, };
-                    }
-
-                    const start = iter.read;
-                    const end = iter.read + line.len;
-                    @memcpy(iter.header[start..end], line);
-                    // add back the newline so our hmac is valid
-                    iter.header[end] = '\n';
-                    iter.read += 1;
-
-                    iter.line += 1;
-                    iter.read += line.len;
-
-                    if (line.len < 3) {
-                        return .{ .prefix = Prefix.unknown, .bytes = line, };
-                    }
-                    const prefix = line[0..3];
-                    return .{
-                        .prefix = Prefix.match(prefix),
-                        .bytes = line,
-                    };
-                }
-
-                /// Reads until the predicate returns false or EOF is reached.
-                fn readUntilFalseOrEof(iter: *Iter, pred: fn ([]u8) bool) ![]u8 {
-                    var fbs = io.fixedBufferStream(&iter.buf);
-                    var r = iter.r;
-                    var w = fbs.writer();
-
-                    var buf: [65]u8 = undefined;
-                    var line_fbs = io.fixedBufferStream(&buf);
-                    const writer = line_fbs.writer();
-                    while (true) {
-                        try r.streamUntilDelimiter(writer, '\n', buf.len);
-                        const line: []u8 = line_fbs.getWritten();
-
-                        const start = iter.read;
-                        const end = iter.read + line.len;
-                        @memcpy(iter.header[start..end], line);
-                        // add back the newline so our hmac is valid
-                        iter.header[end] = '\n';
-                        iter.read += 1;
-
-                        iter.line += 1;
-                        iter.read += line.len;
-
-                        try w.writeAll(line);
-
-                        if (!pred(line)) return fbs.getWritten();
-                        try w.writeAll("\n");
-                        line_fbs.reset();
-                    }
-                }
-
-            };
+    fn match(buf: []u8) Prefix {
+        if (mem.eql(u8, buf, version_prefix)) {
+            return .version;
         }
+        if (mem.eql(u8, buf, stanza_prefix)) {
+            return .stanza;
+        }
+        if (mem.eql(u8, buf, hmac_prefix)) {
+            return .hmac;
+        }
+        return .unknown;
+    }
+};
 
-        pub fn init(allocator: Allocator, r: ReaderType) Self {
+pub const Reader = struct {
+    const Self = @This();
+
+    input: *Io.Reader,
+    armored_reader: ArmoredReader,
+    armored: bool = false,
+    whitespace: bool = false,
+
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator, reader: *Io.Reader, buffer: []u8) Self {
+        return .{
+            .allocator = allocator,
+            .input = reader,
+            .armored_reader =.init(reader, buffer),
+        };
+    }
+
+    const Iterator = struct {
+        const Iter = @This();
+
+        const MAX_HEADER_SIZE = 8192;
+        const MAX_LINE_SIZE = 4096;
+
+        r: *Io.Reader,
+        end: usize = 0,
+        line: usize = 0,
+        header_writer: *Io.Writer,
+
+        const Line = struct {
+            prefix: Prefix = .unknown,
+            bytes: []u8 = &.{},
+        };
+
+        /// Reads lines of the file,
+        /// keeping track of the line number and header.
+        fn next(iter: *Iter) !Line {
+            var w: *Io.Writer = iter.header_writer;
+            var r = iter.r;
+
+            const line = r.peekDelimiterExclusive('\n') catch |err| switch (err) {
+                error.EndOfStream => return .{ .prefix = .end},
+                else => return err,
+            };
+
+            if (isWhiteSpace(line)) {
+                r.toss(line.len + 1); // +1
+                return .{ .prefix = Prefix.whitespace, .bytes = line, };
+            }
+
+            if (line.len < 3) {
+                return .{ .prefix = Prefix.unknown, .bytes = line, };
+            }
+
+            if (try armor.isArmorBegin(line)) {
+                return .{ .prefix = Prefix.armor_begin, .bytes = line, };
+            }
+
+            r.toss(line.len + 1); // +1 for \n
+            iter.line += 1;
+            iter.end += try w.write(line) + try w.write("\n");
+
+            const prefix = line[0..3];
             return .{
-                .allocator = allocator,
-                .r = .{ .normal = r },
+                .prefix = Prefix.match(prefix),
+                .bytes = line,
             };
         }
 
-        pub fn parse(self: *Self) !Header {
-            const Iter = Iterator();
-            var iter: Iter = .{ .r = self.r };
-            var header = Header.init(self.allocator);
-            errdefer header.deinit(self.allocator);
+        /// Reads until the predicate returns false or EOF is reached.
+        fn takeUntilFalseOrEof(iter: *Iter, pred: fn ([]u8) callconv(.@"inline") bool) ![]u8 {
+            var w: *Io.Writer = iter.header_writer;
+            var r = iter.r;
 
-            while (try iter.next()) |line| {
-                line: switch (line.prefix) {
-                    .whitespace => self.whitespace = true,
-                    .armor_begin => {
-                        self.armored_reader = ArmoredReaderType{ .r = self.r.normal };
-                        const areader = self.armored_reader.reader();
-                        self.r = .{ .armored = areader };
-                        iter.r = self.r;
-                    },
-                    .version => {
-                        if (self.whitespace and std.meta.activeTag(self.r) != .armored) {
-                            return error.InvalidWhitespace;
-                        }
-                        header.version = Version.fromStr(line.bytes);
-                    },
-                    .stanza => {
-                        const stanza = line.bytes[3..];
-                        if (stanza.len == 0) return error.EmptyStanza;
-                        for (stanza) |c| try isValidAscii(c);
+            const start = w.end;
+            while (true) {
+                const line = r.takeDelimiterExclusive('\n') catch |err| {
+                    if (err == error.EndOfStream) return &.{};
+                    return err;
+                };
 
-                        var arg_iter = std.mem.splitScalar(u8, stanza, ' ');
-                        var args = std.ArrayList([]u8).init(self.allocator);
-                        errdefer for (args.items) |arg| self.allocator.free(arg);
-                        defer args.deinit();
+                iter.line += 1;
+                iter.end += try w.write(line) + try w.write("\n");
 
-                        const t = arg_iter.first();
-                        const _type = try RecipientType.fromStanzaArg(t);
-                        for (header.recipients.items) |r| {
-                            if (r.type == .scrypt or _type == .scrypt) {
-                                return error.ScryptMultipleRecipients;
-                            }
-                        }
-
-                        while (arg_iter.next()) |arg| {
-                            try args.append(try self.allocator.dupe(u8, arg));
-                        }
-
-                        const b = try iter.readUntilFalseOrEof(isStanzaBody);
-                        const body = try self.allocator.dupe(u8, b);
-                        errdefer self.allocator.free(body);
-
-                        try header.recipients.append(.{
-                            .type = _type,
-                            .args = try args.toOwnedSlice(),
-                            .body = body,
-                        });
-                    },
-                    .hmac => {
-                        const start = Prefix.hmac_prefix.len + 1; // space
-                        if (line.bytes.len <= start) return error.InvalidHeader;
-                        if (line.bytes[start..].len != 43) return error.InvalidHeader;
-                        if (line.bytes[start] == ' ') return error.InvalidHeader;
-                        for (line.bytes[start..]) |b| {
-                            isValidAscii(b) catch return error.InvalidHeader;
-                        }
-                        header.mac = try self.allocator.dupe(u8, line.bytes[start..]);
-                        continue :line .end;
-                    },
-                    .end => {
-                        const header_len = iter.read - header.mac.?.len - 2; // space
-                        header.bytes = try self.allocator.dupe(u8, iter.header[0..header_len]);
-                        return header;
-                    },
-                    else => return error.InvalidHeader,
-                }
-            } else unreachable;
-        }
-
-        // The valid subset of ascii for age strings is 33-126
-        // but we include 32 (space) for convenience
-        inline fn isValidAscii(c: u8) FormatError!void {
-            if (c < 32 or c > 126) {
-                return error.InvalidAscii;
+                if (!pred(line)) return w.buffer[start..w.end - 1];
             }
-        }
-
-        inline fn isWhiteSpace(line: []u8) bool {
-            for (line) |b| {
-                if (!std.ascii.isWhitespace(b)) return false;
-            }
-            return true;
-        }
-
-        // TODO: validate trailing bits
-        fn isStanzaBody(line: []u8) bool {
-            if (line.len < 64) return false;
-            return true;
-        }
-
-        pub fn reader(self: *Self) Reader {
-            return self.r;
-        }
-
-        pub fn deinit(self: *Self) void {
-            _ = self;
         }
     };
-}
 
-pub fn AgeWriter(comptime WriterType: type) type {
-    return struct {
-        const Self = @This();
-        w: Writer,
-        normal_writer: WriterType = undefined,
-        armored_writer: ArmoredWriterType = undefined,
-        armored: bool = false,
+    pub fn parse(self: *Self) !Header {
+        var header_buf: [Iterator.MAX_HEADER_SIZE]u8 = undefined;
+        var header_writer: Io.Writer = .fixed(&header_buf);
+        var iter: Iterator = .{ .r = self.input, .header_writer = &header_writer };
+        var header = Header.init(self.allocator);
+        errdefer header.deinit(self.allocator);
 
-        allocator: Allocator,
+        while (true) {
+            var line = try iter.next();
+            line: switch (line.prefix) {
+                .whitespace => self.whitespace = true,
+                .armor_begin => {
+                    assert(!self.armored);
+                    self.armored = true;
+                    self.input = &self.armored_reader.interface;
+                    iter.r = self.input;
+                },
+                .version => {
+                    if (self.whitespace and !self.armored) return error.InvalidWhitespace;
+                    header.version = Version.fromStr(line.bytes);
+                },
+                .stanza => {
+                    const stanza = line.bytes[3..];
+                    if (stanza.len == 0) return error.EmptyStanza;
+                    for (stanza) |c| try isValidAscii(c);
 
-        const ArmoredWriterType = ArmoredWriter(WriterType);
-        const Writer = union(enum) {
-            armored: ArmoredWriterType.Writer,
-            normal: WriterType,
+                    var arg_iter = std.mem.splitScalar(u8, stanza, ' ');
+                    var args: std.ArrayList([]u8) = .empty;
+                    defer args.deinit(self.allocator);
 
-            pub fn write(self: Writer, buf: []const u8) !usize {
-                return switch (self) {
-                    .armored => |armored| armored.write(buf),
-                    .normal => |normal| normal.write(buf),
-                };
+                    const t = arg_iter.first();
+                    const _type = try RecipientType.fromStanzaArg(t);
+                    for (header.recipients.items) |r| {
+                        if (r.type == .scrypt or _type == .scrypt) {
+                            return error.ScryptMultipleRecipients;
+                        }
+                    }
+
+                    while (arg_iter.next()) |arg| {
+                        try args.append(self.allocator, try self.allocator.dupe(u8, arg));
+                    }
+                    errdefer for (args.items) |arg| self.allocator.free(arg);
+
+                    const b = try iter.takeUntilFalseOrEof(isStanzaEnd);
+                    const body = try self.allocator.dupe(u8, b);
+                    errdefer self.allocator.free(body);
+
+                    try header.recipients.append(self.allocator, .{
+                        .type = _type,
+                        .args = try args.toOwnedSlice(self.allocator),
+                        .body = body,
+                    });
+                },
+                .hmac => {
+                    const start = Prefix.hmac_prefix.len + 1; // space
+                    const bytes = line.bytes[start..];
+                    if (bytes.len != 43) return error.InvalidHeader;
+                    if (isWhiteSpace(bytes)) return error.InvalidHeader;
+                    for (bytes) |b| isValidAscii(b) catch return error.InvalidHeader;
+                    header.mac = try self.allocator.dupe(u8, bytes);
+                    continue :line .end;
+                },
+                .end => {
+                    const header_len = iter.end - header.mac.?.len - 2; // space
+                    const header_bytes = header_writer.buffered()[0..header_len];
+                    header.bytes = try self.allocator.dupe(u8, header_bytes);
+                    return header;
+                },
+                else => return error.InvalidHeader,
             }
+        }
+    }
 
-            pub fn writeAll(self: Writer, buf: []const u8) !usize {
-                return switch (self) {
-                    .armored => |armored| armored.writeAll(buf),
-                    .normal => |normal| normal.writeAll(buf),
-                };
-            }
+    // The valid subset of ascii for age strings is 33-126
+    // but we include 32 (space) for convenience
+    pub inline fn isValidAscii(c: u8) FormatError!void {
+        if (c < 32 or c > 126) {
+            return error.InvalidAscii;
+        }
+    }
+
+    pub inline fn isWhiteSpace(line: []u8) bool {
+        const whitespaceFn = std.ascii.isWhitespace;
+        for (line) |b| {
+            if (!whitespaceFn(b)) return false;
+        }
+        return true;
+    }
+
+    // TODO: validate trailing bits
+    inline fn isStanzaEnd(line: []u8) bool {
+        if (line.len < 64) return false;
+        return true;
+    }
+};
+
+pub const Writer = struct {
+    const Self = @This();
+    output: *Io.Writer,
+    normal_writer: *Io.Writer,
+    armored_writer: ArmoredWriter,
+    armored: bool,
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator, w: *Io.Writer, armored: bool, buffer: []u8) Self {
+        return .{
+            .allocator = allocator,
+            .output = w,
+            .normal_writer = w,
+            .armored_writer = .init(w, buffer),
+            .armored = armored,
         };
+    }
 
-        pub fn init(allocator: Allocator, w: WriterType, armored: bool) Self {
-            var header_writer: Self = .{
-                .allocator = allocator,
-                .w = .{ .normal = w },
-                .normal_writer = w,
-                .armored = armored,
-            };
-            header_writer.writeArmorStartIfNeeded() catch unreachable;
-            return header_writer;
+    pub fn write(self: *Self, fk: *const Key, header: Header) !void {
+        self.output = if (self.armored) &self.armored_writer.interface else self.normal_writer;
+        var buf: [Reader.Iterator.MAX_HEADER_SIZE]u8 = undefined;
+        var w: Io.Writer = .fixed(&buf);
+
+        _ = try w.write(header.version.?.toString());
+        _ = try w.write("\n");
+        for (header.recipients.items) |*r| {
+            const rstring = try r.toStanza(self.allocator);
+            _ = try w.write(rstring);
+            _ = try w.write("\n");
+            self.allocator.free(rstring);
         }
+        _ = try w.write("---");
 
-        pub fn write(self: *Self, fk: *const Key, header: Header) !void {
-            var recip = std.ArrayList(u8).init(self.allocator);
-            defer recip.deinit();
-            var rwriter = recip.writer();
-            for (header.recipients.items, 0..) |*r, i| {
-                const rstring = try r.toStanza(self.allocator);
-                _ = try rwriter.write(rstring);
-                if (i != header.recipients.items.len - 1) {
-                    _ = try rwriter.write("\n");
-                }
-                self.allocator.free(rstring);
-            }
-
-            const header_str = try std.fmt.allocPrint(
-                self.allocator,
-                \\{s}
-                \\{s}
-                \\---
-            ,.{header.version.?.toString(),recip.items});
-            defer self.allocator.free(header_str);
-
-            const mac = generate_hmac(
-                header_str,
-                fk,
-            );
-
-            try self.switchWriterIfNeeded();
-            _ = try self.w.write(header_str);
-            _ = try self.w.write(" ");
-            _ = try self.w.write(&mac);
-            _ = try self.w.write("\n");
-        }
-
-        fn switchWriterIfNeeded(self: *Self) !void {
-            if (!self.armored) return;
-            switch (self.w) {
-                .normal => {
-                    self.armored_writer = ArmoredWriterType{ .w = self.normal_writer };
-                    const awriter = self.armored_writer.writer();
-                    self.w = .{ .armored = awriter };
-                },
-                .armored => {
-                    self.w = .{ .normal = self.normal_writer };
-                },
-            }
-        }
-
-        fn writeArmorStartIfNeeded(self: *Self) !void {
-            if (!self.armored) return;
-            _ = try self.w.write(armor.ARMOR_BEGIN_MARKER);
-            _ = try self.w.write("\n");
-        }
-
-        pub fn writeArmorEndIfNeeded(self: *Self) !void {
-            if (!self.armored) return;
-            try self.armored_writer.flush();
-            _ = try self.w.write(armor.ARMOR_END_MARKER);
-            _ = try self.w.write("\n");
-        }
-
-        pub fn writer(self: *Self) Writer {
-            return self.w;
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.switchWriterIfNeeded() catch unreachable;
-            self.writeArmorEndIfNeeded() catch unreachable;
-        }
-    };
-}
+        const mac = generate_hmac(w.buffered(), fk);
+        _ = try w.write(" ");
+        _ = try w.write(&mac);
+        _ = try w.write("\n");
+        _ = try self.output.write(w.buffered());
+    }
+};
 
 pub fn generate_hmac(
     header: []const u8,
@@ -445,11 +300,12 @@ pub fn generate_hmac(
     return encoded[0..43].*;
 }
 
+
 test "age file" {
     const t = std.testing;
     const bech32 = @import("bech32.zig");
     const X25519 = std.crypto.dh.X25519;
-    var fbs = io.fixedBufferStream(
+    var r: Io.Reader = .fixed(
         \\age-encryption.org/v1
         \\-> X25519 TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc
         \\EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U
@@ -464,14 +320,8 @@ test "age file" {
     const test_file_key = "YELLOW SUBMARINE";
 
     const allocator = std.testing.allocator;
-    var reader = AgeReader(
-        @TypeOf(fbs.reader()),
-    ){
-        .allocator = allocator,
-        .r = .{ .normal = fbs.reader() },
-    };
-    defer reader.deinit();
-
+    // var buffer: [ArmoredReader.MIN_BUFFER_SIZE]u8 = undefined;
+    var reader: Reader = .init(allocator, &r, &.{});
     var header = try reader.parse();
     defer header.deinit(allocator);
 
@@ -480,8 +330,8 @@ test "age file" {
     try t.expect(header.mac.?.len == 43);
 
     try t.expect(header.recipients.items[0].type == .X25519);
-    try t.expect(mem.eql(u8, header.recipients.items[0].args.?[0], "TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc"));
-    try t.expect(mem.eql(u8, header.recipients.items[0].body.?, "EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U"));
+    try t.expectEqualStrings("TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc", header.recipients.items[0].args.?[0]);
+    try t.expectEqualStrings("EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U", header.recipients.items[0].body.?);
 
     const id: Key = .{ .slice = .{ .k = &identity } };
     var file_key = try header.recipients.items[0].unwrap(allocator, id);
@@ -511,7 +361,7 @@ test "armored age file" {
     const t = std.testing;
     const bech32 = @import("bech32.zig");
     const X25519 = std.crypto.dh.X25519;
-    var fbs = io.fixedBufferStream(
+    var r: Io.Reader = .fixed(
         \\-----BEGIN AGE ENCRYPTED FILE-----
         \\YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBURWlGMHlwcXIrYnB2Y3FY
         \\TnlDVkpwTDdPdXdQZFZ3UEw3S1FFYkZET0NjCkVtRUNBRWNLTituL1ZzOVNiV2lW
@@ -524,23 +374,18 @@ test "armored age file" {
     const test_file_key = "YELLOW SUBMARINE";
 
     const allocator = std.testing.allocator;
-    var reader = AgeReader(
-        @TypeOf(fbs.reader()),
-    ){
-        .allocator = allocator,
-        .r = .{ .normal = fbs.reader() },
-    };
-    defer reader.deinit();
+    var buffer: [ArmoredReader.MIN_BUFFER_SIZE]u8 = undefined;
+    var reader: Reader = .init(allocator, &r, &buffer);
 
     var header = try reader.parse();
     defer header.deinit(allocator);
 
-    try t.expect(header.version.? == .v1);
-    try t.expect(header.recipients.items.len == 1);
-    try t.expect(header.mac.?.len == 43);
+    try t.expectEqual(.v1, header.version.?);
+    try t.expectEqual(1, header.recipients.items.len);
+    try t.expectEqual(43, header.mac.?.len);
 
-    try t.expect(header.recipients.items[0].type == .X25519);
-    try t.expect(header.recipients.items[0].args != null);
+    try t.expectEqual(.X25519, header.recipients.items[0].type);
+    try t.expectEqualStrings("TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc", header.recipients.items[0].args.?[0]);
     try t.expect(header.recipients.items[0].body != null);
 
     const id: Key = .{ .slice = .{ .k = &identity } };
@@ -569,44 +414,37 @@ test "armored age file" {
 
 test "iterator" {
     const t = std.testing;
-    var fbs = io.fixedBufferStream(
+    var r: Io.Reader = .fixed(
         \\age-encryption.org/v1
         \\-> X25519 TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc
         \\EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U
         \\--- Vn+54jqiiUCE+WZcEVY3f1sqHjlu/z1LCQ/T7Xm7qI0
+        \\
     );
 
-    var iter = AgeReader(
-        @TypeOf(fbs.reader()),
-    ).Iterator(){
-        .r = .{ .normal = fbs.reader() },
-    };
+    var header_buf: [Reader.Iterator.MAX_HEADER_SIZE]u8 = undefined;
+    var header_writer: Io.Writer = .fixed(&header_buf);
+    var iter: Reader.Iterator = .{ .r = &r, .header_writer = &header_writer };
 
-    try t.expectEqualStrings("age-encryption.org/v1", (try iter.next()).?.bytes);
-    try t.expectEqualStrings("-> X25519 TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc", (try iter.next()).?.bytes);
-    try t.expectEqualStrings("EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U", (try iter.next()).?.bytes);
-    try t.expectEqualStrings("--- Vn+54jqiiUCE+WZcEVY3f1sqHjlu/z1LCQ/T7Xm7qI0", (try iter.next()).?.bytes);
-    try t.expect((try iter.next()).?.bytes.len == 0);
+    try t.expectEqualStrings("age-encryption.org/v1", (try iter.next()).bytes);
+    try t.expectEqualStrings("-> X25519 TEiF0ypqr+bpvcqXNyCVJpL7OuwPdVwPL7KQEbFDOCc", (try iter.next()).bytes);
+    try t.expectEqualStrings("EmECAEcKN+n/Vs9SbWiV+Hu0r+E8R77DdWYyd83nw7U", (try iter.next()).bytes);
+    try t.expectEqualStrings("--- Vn+54jqiiUCE+WZcEVY3f1sqHjlu/z1LCQ/T7Xm7qI0", (try iter.next()).bytes);
+    try t.expect((try iter.next()).bytes.len == 0);
 }
 
 test "invalid" {
     const t = std.testing;
-    var fbs = io.fixedBufferStream("age-encryption.org/v1\n-> \x7f\n");
+    var r: Io.Reader = .fixed("age-encryption.org/v1\n-> \x7f\n");
 
     const allocator = std.testing.allocator;
-    var reader = AgeReader(
-        @TypeOf(fbs.reader()),
-    ){
-        .allocator = allocator,
-        .r = . { .normal = fbs.reader() },
-    };
-    defer reader.deinit();
+    var reader: Reader = .init(allocator, &r, &.{});
     try t.expectError(error.InvalidAscii, reader.parse());
 }
 
 test "scrypt recipient" {
     const t = std.testing;
-    var fbs = io.fixedBufferStream(
+    var r: Io.Reader = .fixed(
         \\age-encryption.org/v1
         \\-> scrypt rF0/NwblUHHTpgQgRpe5CQ 10
         \\gUjEymFKMVXQEKdMMHL24oYexjE3TIC0O0zGSqJ2aUY
@@ -614,31 +452,25 @@ test "scrypt recipient" {
         \\
     );
     const allocator = std.testing.allocator;
-    var reader = AgeReader(
-        @TypeOf(fbs.reader()),
-    ){
-        .allocator = allocator,
-        .r = .{ .normal = fbs.reader() },
-    };
-    defer reader.deinit();
+    var reader: Reader = .init(allocator, &r, &.{});
 
     var header = try reader.parse();
     defer header.deinit(allocator);
 
-    try t.expect(header.version.? == .v1);
-    try t.expect(header.recipients.items.len == 1);
-    try t.expect(header.mac.?.len == 43);
+    try t.expectEqual(.v1, header.version.?);
+    try t.expectEqual(1, header.recipients.items.len);
+    try t.expectEqual(43, header.mac.?.len);
 
-    try t.expect(header.recipients.items[0].type == .scrypt);
-    try t.expect(mem.eql(u8, header.recipients.items[0].args.?[0], "rF0/NwblUHHTpgQgRpe5CQ"));
-    try t.expect(mem.eql(u8, header.recipients.items[0].args.?[1], "10"));
-    try t.expect(mem.eql(u8, header.recipients.items[0].body.?, "gUjEymFKMVXQEKdMMHL24oYexjE3TIC0O0zGSqJ2aUY"));
-    try t.expect(mem.eql(u8, header.mac.?, "IOXiQYStkoT1mvZW2tFOqZdhRVvj58egABx/sWfZQbc"));
+    try t.expectEqual(.scrypt, header.recipients.items[0].type);
+    try t.expectEqualStrings("rF0/NwblUHHTpgQgRpe5CQ", header.recipients.items[0].args.?[0]);
+    try t.expectEqualStrings("10", header.recipients.items[0].args.?[1]);
+    try t.expectEqualStrings("gUjEymFKMVXQEKdMMHL24oYexjE3TIC0O0zGSqJ2aUY",header.recipients.items[0].body.?);
+    try t.expectEqualStrings("IOXiQYStkoT1mvZW2tFOqZdhRVvj58egABx/sWfZQbc", header.mac.?);
 }
 
 test "ed25519 recipient" {
     const t = std.testing;
-    var fbs = io.fixedBufferStream(
+    var r: Io.Reader = .fixed(
         \\age-encryption.org/v1
         \\-> ssh-ed25519 xk+TSA xSh4cYHalYztTjXKULvJhGWIEp8gCSIQ/zx13jGzalw
         \\+Iil7T4RMV75FvQKvZD6gkjWsllUrW5SBHHxN2wMruw
@@ -646,31 +478,25 @@ test "ed25519 recipient" {
         \\
     );
     const allocator = std.testing.allocator;
-    var reader = AgeReader(
-        @TypeOf(fbs.reader()),
-    ){
-        .allocator = allocator,
-        .r = .{ .normal = fbs.reader() },
-    };
-    defer reader.deinit();
+    var reader: Reader = .init(allocator, &r, &.{});
 
     var header = try reader.parse();
     defer header.deinit(allocator);
 
-    try t.expect(header.version.? == .v1);
-    try t.expect(header.recipients.items.len == 1);
-    try t.expect(header.mac.?.len == 43);
+    try t.expectEqual(.v1, header.version.?);
+    try t.expectEqual(1, header.recipients.items.len);
+    try t.expectEqual(43, header.mac.?.len);
 
-    try t.expect(header.recipients.items[0].type == .@"ssh-ed25519");
-    try t.expect(mem.eql(u8, header.recipients.items[0].args.?[0], "xk+TSA"));
-    try t.expect(mem.eql(u8, header.recipients.items[0].args.?[1], "xSh4cYHalYztTjXKULvJhGWIEp8gCSIQ/zx13jGzalw"));
-    try t.expect(mem.eql(u8, header.recipients.items[0].body.?, "+Iil7T4RMV75FvQKvZD6gkjWsllUrW5SBHHxN2wMruw"));
-    try t.expect(mem.eql(u8, header.mac.?, "NXKZrxXl5+8EmJG1lcx01IeOzm1k7nmlEJbJ6Dbymlg"));
+    try t.expectEqual(.@"ssh-ed25519", header.recipients.items[0].type);
+    try t.expectEqualStrings("xk+TSA", header.recipients.items[0].args.?[0]);
+    try t.expectEqualStrings("xSh4cYHalYztTjXKULvJhGWIEp8gCSIQ/zx13jGzalw", header.recipients.items[0].args.?[1]);
+    try t.expectEqualStrings("+Iil7T4RMV75FvQKvZD6gkjWsllUrW5SBHHxN2wMruw",header.recipients.items[0].body.?);
+    try t.expectEqualStrings("NXKZrxXl5+8EmJG1lcx01IeOzm1k7nmlEJbJ6Dbymlg", header.mac.?);
 }
 
 test "rsa recipient" {
     const t = std.testing;
-    var fbs = io.fixedBufferStream(
+    var r: Io.Reader = .fixed(
         \\age-encryption.org/v1
         \\-> ssh-rsa UI4tAQ
         \\AmzFOlub++Nsaxhme3ynSwrSjYZwYIyt91m2+CXZnkOGDMurW8vVyERWQZRQxB5j
@@ -680,27 +506,22 @@ test "rsa recipient" {
         \\
     );
     const allocator = std.testing.allocator;
-    var reader = AgeReader(
-        @TypeOf(fbs.reader()),
-    ){
-        .allocator = allocator,
-        .r = .{ .normal = fbs.reader() },
-    };
-    defer reader.deinit();
+    var reader: Reader = .init(allocator, &r, &.{});
 
     var header = try reader.parse();
     defer header.deinit(allocator);
 
-    try t.expect(header.version.? == .v1);
-    try t.expect(header.recipients.items.len == 1);
-    try t.expect(header.mac.?.len == 43);
+    try t.expectEqual(.v1, header.version.?);
+    try t.expectEqual(1, header.recipients.items.len);
+    try t.expectEqual(43, header.mac.?.len);
 
-    try t.expect(header.recipients.items[0].type == .@"ssh-rsa");
-    try t.expect(mem.eql(u8, header.recipients.items[0].args.?[0], "UI4tAQ"));
-    try t.expect(mem.eql(u8, header.recipients.items[0].body.?,
+    try t.expectEqual(.@"ssh-rsa", header.recipients.items[0].type);
+    try t.expectEqualStrings("UI4tAQ", header.recipients.items[0].args.?[0]);
+    try t.expectEqualStrings(
             \\AmzFOlub++Nsaxhme3ynSwrSjYZwYIyt91m2+CXZnkOGDMurW8vVyERWQZRQxB5j
             \\c9KVBe+MhHGt8zMjhytnjepioA4bCJgnxLUKU4u8WzH68TbCFb5wcoiNkTVOejyy
             \\NGV+DSwX6vBCzxsaswpYFbhG0X6wzYweUqJgvovYW/k
-    ));
+            , header.recipients.items[0].body.?,
+    );
     try t.expect(mem.eql(u8, header.mac.?, "hwblgFvUGLpdna6xzrTwsfq3Y3ztKzeF7a0DaYwXnHA"));
 }

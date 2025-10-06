@@ -38,7 +38,7 @@ pub fn fromPassphrase(allocator: Allocator, passphrase: []const u8, file_key: Ke
 pub fn unwrap(allocator: Allocator, passphrase: []const u8, args: [][]u8, body: []u8) !Key {
     // stanza body encryption key
     var key: [32]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &key);
+    defer std.crypto.secureZero(u8, &key);
 
     // the encrypted file key
     var file_key_enc: [32]u8 = undefined;
@@ -112,7 +112,7 @@ pub fn unwrap(allocator: Allocator, passphrase: []const u8, args: [][]u8, body: 
 pub fn wrap(allocator: Allocator, file_key: Key, passphrase: Key) !Recipient {
     // scrypt derived key from the passphrase
     var key: [32]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &key);
+    defer std.crypto.secureZero(u8, &key);
 
     // the encrypted file key and tag to be base64
     // encoded and written to the reciepient's body

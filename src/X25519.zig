@@ -46,9 +46,9 @@ pub fn fromPublicKey(allocator: Allocator, s: []const u8, file_key: Key) !Recipi
 
 pub fn fromPrivateKey(allocator: Allocator, s: []const u8, file_key: Key) !Recipient {
     var recipient_buf: [90]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &recipient_buf);
+    defer std.crypto.secureZero(u8, &recipient_buf);
     var secret_key: [32]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &secret_key);
+    defer std.crypto.secureZero(u8, &secret_key);
 
     const decoded = try bech32.decode(&recipient_buf, BECH32_HRP_PRIVATE, s);
     _ = try bech32.convertBits(&secret_key, decoded.data, 5, 8, false);
@@ -65,12 +65,12 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
     // derived from the shared secret and salt
     // decrypts the file key from the recipients body
     var key: [32]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &key);
+    defer std.crypto.secureZero(u8, &key);
 
     // derived from the bech32 encoded
     // identity supplied by the user
     var x25519_secret_key: [32]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &x25519_secret_key);
+    defer std.crypto.secureZero(u8, &x25519_secret_key);
 
     // the encrypted file key
     var file_key_enc: [32]u8 = undefined;
@@ -123,7 +123,7 @@ pub fn unwrap(allocator: Allocator, identity: []const u8, args: [][]u8, body: []
     const public_key = try X25519.recoverPublicKey(x25519_secret_key);
 
     var shared_secret = try X25519.scalarmult(x25519_secret_key, ephemeral_share);
-    defer std.crypto.utils.secureZero(u8, &shared_secret);
+    defer std.crypto.secureZero(u8, &shared_secret);
 
     @memcpy(salt[0..32], &ephemeral_share);
     @memcpy(salt[32..], &public_key);
@@ -152,13 +152,13 @@ pub fn wrap(allocator: Allocator, file_key: Key, public_key: Key) !Recipient {
     // derived from the shared secret and salt
     // encrypts the file key in the recipients body
     var key: [32]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &key);
+    defer std.crypto.secureZero(u8, &key);
 
     // a randomly generated ephemeral secret
     // currently only supported on linux
     // as it's pulled from /dev/random
     var ephemeral_secret: [32]u8 = undefined;
-    defer std.crypto.utils.secureZero(u8, &ephemeral_secret);
+    defer std.crypto.secureZero(u8, &ephemeral_secret);
 
     // the encrypted file key and tag to be base64
     // encoded and written to the reciepient's body
@@ -194,7 +194,7 @@ pub fn wrap(allocator: Allocator, file_key: Key, public_key: Key) !Recipient {
 
     const ephemeral_share = try X25519.recoverPublicKey(ephemeral_secret);
     var shared_secret = try X25519.scalarmult(ephemeral_secret, pk[0..32].*);
-    defer std.crypto.utils.secureZero(u8, &shared_secret);
+    defer std.crypto.secureZero(u8, &shared_secret);
 
     @memcpy(salt[0..32], &ephemeral_share);
     @memcpy(salt[32..], pk);

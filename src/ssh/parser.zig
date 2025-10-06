@@ -6,7 +6,7 @@ const Ed25519 = std.crypto.sign.Ed25519;
 
 const ssh = @import("../ssh.zig");
 const Rsa = @import("rsa.zig");
-const Io = @import("../io.zig");
+const Io = @import("../Io.zig");
 const Key = @import("../key.zig").Key;
 const PemDecoder = @import("lib.zig").PemDecoder;
 
@@ -29,7 +29,7 @@ const SshEd25519PublicKey = struct {
 pub fn parseOpenSshPublicKey(
     data: []u8
 ) !ssh.PublicKey {
-    var buf: [256]u8 = undefined;
+    var buf: [1024]u8 = undefined;
 
     var iter = std.mem.splitScalar(u8, data, ' ');
     const key_type = iter.first();

@@ -4,8 +4,8 @@
   inputs = {
     nixpkgs.url      = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url  = "github:numtide/flake-utils";
-    treefmt-nix.url = "github:numtide/treefmt-nix";
-    zig.url = "github:mitchellh/zig-overlay";
+    treefmt-nix.url  = "github:numtide/treefmt-nix";
+    zig.url          = "github:mitchellh/zig-overlay";
   };
 
   outputs = { nixpkgs, zig, flake-utils, ... }:
@@ -30,7 +30,7 @@
       {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            zig.packages.${system}."0.14.0"
+            zig.packages.${system}."0.15.1"
             age
             rage
             lldb

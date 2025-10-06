@@ -1,7 +1,6 @@
 const std = @import("std");
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const AnyReader = std.io.AnyReader;
-const AnyWriter = std.io.AnyWriter;
 const ArrayList = std.ArrayList;
 
 pub const age = @import("age.zig");
@@ -9,9 +8,9 @@ pub const bech32 = @import("bech32.zig");
 pub const cli = @import("cli.zig");
 pub const ssh = @import("ssh/lib.zig");
 pub const X25519 = @import("X25519.zig");
-pub const AgeReader = format.AgeReader;
-pub const AgeWriter = format.AgeWriter;
-pub const Io = @import("io.zig");
+pub const AgeIo = @import("Io.zig");
+pub const AgeReader = format.Reader;
+pub const AgeWriter = format.Writer;
 pub const Key = @import("key.zig").Key;
 pub const Recipient = @import("recipient.zig").Recipient;
 
@@ -22,71 +21,88 @@ const Header = age.Header;
 
 const RecipientList = ArrayList(Recipient);
 
-pub fn AgeEncryptor(ReaderType: type, WriterType: type) type {
-    return struct {
-        const Self = @This();
+pub const AgeEncryptor = struct {
+    const Self = @This();
 
+    allocator: Allocator,
+    reader: *Io.Reader,
+    writer: *Io.Writer,
+
+    pub fn init(
         allocator: Allocator,
-        reader: ReaderType,
-        writer: WriterType,
+        reader: *Io.Reader,
+        writer: *Io.Writer
+    ) Self {
+        return .{
+            .allocator = allocator,
+            .reader = reader,
+            .writer = writer,
+        };
+    }
 
-        pub fn init(allocator: Allocator, reader: ReaderType, writer: WriterType) Self {
-            return .{
-                .allocator = allocator,
-                .reader = reader,
-                .writer = writer,
-            };
-        }
+    pub fn encrypt(
+        self: Self,
+        file_key: *const Key,
+        recipients: RecipientList,
+        armored: bool
+    ) !void {
+        const header: Header = .{
+            .version = .v1,
+            .recipients = recipients,
+            .allocator = self.allocator
+        };
+        var buf: [1024]u8 = undefined;
+        var w: AgeWriter = .init(self.allocator, self.writer, armored, &buf);
 
-        pub fn encrypt(
-            self: Self,
-            file_key: *const Key,
-            recipients: RecipientList,
-            armored: bool
-        ) !void {
-            const header: Header = .{ .version = .v1, .recipients = recipients };
-            var writer = AgeWriter(WriterType).init(self.allocator, self.writer, armored);
-            defer writer.deinit();
+        if (armored) try w.armored_writer.begin();
+        try w.write(file_key, header);
+        try age.encrypt(file_key, self.reader, w.output);
+        if (armored) try w.armored_writer.finish();
+    }
+};
 
-            try writer.write(file_key, header);
+pub const AgeDecryptor = struct {
+    const Self = @This();
 
-            _ = try age.encrypt(file_key, self.reader, writer.writer());
-        }
-    };
+    allocator: Allocator,
+    input: *Io.Reader,
+    output: *Io.Writer,
 
-}
-
-pub fn AgeDecryptor(ReaderType: type, WriterType: type) type {
-    return struct {
-        const Self = @This();
-
+    pub fn init(
         allocator: Allocator,
-        reader: ReaderType,
-        writer: WriterType,
+        reader: *Io.Reader,
+        writer: *Io.Writer
+    ) Self {
+        return .{
+            .allocator = allocator,
+            .input = reader,
+            .output = writer
+        };
+    }
 
-        pub fn init(allocator: Allocator, reader: ReaderType, writer: WriterType) Self {
-            return .{ .allocator = allocator, .reader = reader, .writer = writer, };
-        }
+    pub fn decrypt(self: Self, identities: []Key) !void {
+        var buf: [1024]u8 = undefined;
+        var reader: AgeReader = .init(self.allocator, self.input, &buf);
 
-        pub fn decrypt(
-            self: Self,
-            identities: []Key,
-        ) !void {
-            var reader = AgeReader(ReaderType).init(self.allocator, self.reader);
-            defer reader.deinit();
+        var header = reader.parse() catch |e| {
+            if (reader.armored_reader.armor_err) |err| return err;
+            if (reader.armored_reader.decode_err) |err| return err;
+            return e;
+        };
+        defer header.deinit(self.allocator);
 
-            var header = try reader.parse();
-            defer header.deinit(self.allocator);
+        const file_key: Key = try header.unwrap(self.allocator, identities);
+        defer file_key.deinit(self.allocator);
 
-            const file_key: Key = try header.unwrap(self.allocator, identities);
-            defer file_key.deinit(self.allocator);
+        try header.verify_hmac(&file_key);
 
-            try header.verify_hmac(&file_key);
-
-            _ = try age.decrypt(&file_key, reader.reader(), self.writer);
-        }
-    };
-}
+        age.decrypt(&file_key, reader.input, self.output) catch |e| {
+            if (reader.armored_reader.armor_err) |err| return err;
+            if (reader.armored_reader.decode_err) |err| return err;
+            return e;
+        };
+    }
+};
 
 test {
     _  = age;

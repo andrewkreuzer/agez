@@ -96,16 +96,16 @@ pub const rsa = struct {
         defer allocator.free(encoded_buf);
         const encoded = Encoder.encode(encoded_buf, buf[0..n]);
 
-        var body = ArrayList([]const u8).init(allocator);
-        defer body.deinit();
+        var body: ArrayList([]const u8) = .empty;
+        defer body.deinit(allocator);
         var iter = std.mem.window(u8, encoded, 64, 64);
         var short = false;
         while (iter.next()) |line | {
             if (line.len < 64) short = true;
-            try body.append(line);
+            try body.append(allocator, line);
         }
-        if (!short) try body.append("");
-        const b_slice = try body.toOwnedSlice();
+        if (!short) try body.append(allocator, "");
+        const b_slice = try body.toOwnedSlice(allocator);
         const b = try std.mem.join(allocator, "\n", b_slice);
         defer allocator.free(b_slice);
 
@@ -167,7 +167,7 @@ pub const ed25519 = struct {
         // derived from the shared secret and salt
         // decrypts the file key from the recipients body
         var key: [32]u8 = undefined;
-        defer std.crypto.utils.secureZero(u8, &key);
+        defer std.crypto.secureZero(u8, &key);
 
         // the shortened fingerprint of the recipients public key
         var rpk_ssh_tag: [4]u8 = undefined;
@@ -223,7 +223,7 @@ pub const ed25519 = struct {
         var rk_hash: [Sha512.digest_length]u8 = undefined;
         Sha512.hash(private_key[0..32], &rk_hash, .{});
         const rk: [32]u8 = rk_hash[0..32].*;
-        defer std.crypto.utils.secureZero(u8, &rk_hash);
+        defer std.crypto.secureZero(u8, &rk_hash);
 
         const rpk = try X25519.recoverPublicKey(rk);
 
@@ -239,7 +239,7 @@ pub const ed25519 = struct {
                        try X25519.scalarmult(rk, epk)
                    );
                };
-        defer std.crypto.utils.secureZero(u8, &shared_secret);
+        defer std.crypto.secureZero(u8, &shared_secret);
 
         @memcpy(salt[0..32], &epk);
         @memcpy(salt[32..], &rpk);
@@ -267,13 +267,13 @@ pub const ed25519 = struct {
         // derived from the shared secret and salt
         // encrypts the file key in the recipients body
         var key: [32]u8 = undefined;
-        defer std.crypto.utils.secureZero(u8, &key);
+        defer std.crypto.secureZero(u8, &key);
 
         // a randomly generated ephemeral secret
         // currently only supported on linux
         // as it's pulled from /dev/random
         var ephemeral_secret: [32]u8 = undefined;
-        defer std.crypto.utils.secureZero(u8, &ephemeral_secret);
+        defer std.crypto.secureZero(u8, &ephemeral_secret);
 
         // the encrypted file key and tag to be base64
         // encoded and written to the reciepient's body
@@ -337,7 +337,7 @@ pub const ed25519 = struct {
                        try X25519.scalarmult(ephemeral_secret, rpk)
                    );
                };
-        defer std.crypto.utils.secureZero(u8, &shared_secret);
+        defer std.crypto.secureZero(u8, &shared_secret);
 
         @memcpy(salt[0..32], &epk);
         @memcpy(salt[32..], &rpk);
