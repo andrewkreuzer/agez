@@ -18,7 +18,7 @@ const PemDecoder = agez.ssh.PemDecoder;
 const Recipient = agez.Recipient;
 const X25519 = agez.X25519;
 
-const Args2 = struct {
+const Args = struct {
     help: argz.Arg(bool) = .{ .description = "Prints the help text" },
     encrypt: argz.Arg(bool) = .{ .description = "Encrypt the input (default)" },
     decrypt: argz.Arg(bool) = .{ .description = "Decrypt the input" },
@@ -39,7 +39,7 @@ pub fn main() !void {
     defer if (gpa.deinit() == .leak) { std.debug.print("Leak detected\n", .{}); };
     defer arena.deinit();
 
-    var cli = argz.Parse(Args2).init(allocator);
+    var cli = argz.Parse(Args).init(allocator);
     defer cli.deinit();
     const args = try cli.parse();
 
