@@ -8,8 +8,6 @@ const File = fs.File;
 const FileReader = std.fs.File.Reader;
 const FileWriter = std.fs.File.Writer;
 
-const cli = @import("cli.zig");
-
 input: File,
 output: File,
 reader: FileReader,

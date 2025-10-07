@@ -4,9 +4,11 @@ const exit = std.posix.exit;
 const ArrayList = std.ArrayList;
 const File = std.fs.File;
 
+const argz = @import("argz");
+const String = argz.String;
+
 const agez = @import("agez");
 const age = agez.age;
-const cli = agez.cli;
 const AgeIo = agez.AgeIo;
 const Key = agez.Key;
 const AgeEncryptor = agez.AgeEncryptor;
@@ -16,6 +18,19 @@ const PemDecoder = agez.ssh.PemDecoder;
 const Recipient = agez.Recipient;
 const X25519 = agez.X25519;
 
+const Args2 = struct {
+    help: argz.Arg(bool) = .{ .description = "Prints the help text" },
+    encrypt: argz.Arg(bool) = .{ .description = "Encrypt the input (default)" },
+    decrypt: argz.Arg(bool) = .{ .description = "Decrypt the input" },
+    output: argz.Arg(?String) = .{ .description = "Output to a path OUTPUT" },
+    armor: argz.Arg(bool) = .{ .description = "Encrypt to a PEM encoded format" },
+    passphrase: argz.Arg(bool) = .{ .description = "Encrypt with a passphrase" },
+    recipient: argz.Arg(?ArrayList(String)) = .{ .description = "Encrypt to a specified RECIPIENT. Can be repeated" },
+    recipients_file: argz.Arg(?ArrayList(String)) = .{ .short = "-R", .description = "Encrypt to recipients listed at PATH. Can be repeated" },
+    identity: argz.Arg(?ArrayList(String)) = .{ .description = "Use the identity file at PATH. Can be repeated" },
+    input: argz.Positional(?String) = .{ .description = "Input file, defaults to stdin" },
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa_allocator = gpa.allocator();
@@ -24,15 +39,20 @@ pub fn main() !void {
     defer if (gpa.deinit() == .leak) { std.debug.print("Leak detected\n", .{}); };
     defer arena.deinit();
 
-    const args = try cli.args(allocator);
-    const armored = args.armor.flag();
-    const decrypt = args.decrypt.flag();
+    var cli = argz.Parse(Args2).init(allocator);
+    defer cli.deinit();
+    const args = try cli.parse();
+
+    const armored = args.armor;
+    const decrypt = args.decrypt;
     const file_key: Key = try Key.init(allocator, 16);
     const options = AgeIo.Options {
         .read_buffer = try allocator.alloc(u8, 4096),
         .write_buffer = try allocator.alloc(u8, 4096),
     };
-    var Io: AgeIo = try .init(args.input.value(), args.output.value(), options);
+    const output = if (args.output) |o| o.inner else null;
+    const input = if (args.input) |i| i.inner else null;
+    var Io: AgeIo = try .init(input, output, options);
     defer {
         Io.deinit();
         allocator.free(options.read_buffer);
@@ -49,14 +69,14 @@ pub fn main() !void {
     }
 
     var recipients: ArrayList(Recipient) = .empty;
-    if (args.recipient.values()) |values| for (values) |recipient| {
-        const r = try Recipient.fromAgePublicKey(allocator, recipient, file_key);
+    if (args.recipient) |values| for (values.items) |recipient| {
+        const r = try Recipient.fromAgePublicKey(allocator, recipient.inner, file_key);
         try recipients.append(allocator, r);
     };
-    if (args.recipients_file.values()) |files| for (files) |file_name| {
+    if (args.recipients_file) |files| for (files.items) |file_name| {
         var buf: [4096]u8 = undefined;
 
-        const f: File = try AgeIo.openFile(file_name);
+        const f: File = try AgeIo.openFile(file_name.inner);
         defer f.close();
         var file_buf: [4096]u8 = undefined;
         var reader = f.reader(&file_buf);
@@ -85,11 +105,11 @@ pub fn main() !void {
                 try line_fbs.seekTo(0);
             }
         } else {
-            std.debug.print("Unrecognized recipient file format: {s}\n", .{file_name});
+            std.debug.print("Unrecognized recipient file format: {s}\n", .{file_name.inner});
         }
     };
 
-    const identities: ?[]Key = switch (args.passphrase.flag()) {
+    const identities: ?[]Key = switch (args.passphrase) {
         true => blk: {
             var id = try allocator.alloc(Key, 1);
             var passphrase_buf: [128]u8 = undefined;
@@ -101,17 +121,17 @@ pub fn main() !void {
             break :blk id;
         },
         false => blk: {
-            if (args.identity.values()) |files| {
+            if (args.identity) |files| {
                 var ids: ArrayList(Key) = .empty;
-                for (files) |file_name| {
+                for (files.items) |file_name| {
                     var identity_buf: [256]u8 = undefined;
                     defer std.crypto.secureZero(u8, &identity_buf);
-                    const line = try AgeIo.readFirstLine(&identity_buf, file_name);
+                    const line = try AgeIo.readFirstLine(&identity_buf, file_name.inner);
                     const prefix = line[0..14];
                     if (line.len == 0) continue;
                     if (mem.eql(u8, prefix[0..PemDecoder.header.len], PemDecoder.header)) {
                         var in_buf: [PemDecoder.max_key_size]u8 = undefined;
-                        const f = try AgeIo.openFile(file_name);
+                        const f = try AgeIo.openFile(file_name.inner);
                         defer f.close();
                         const n = try f.read(&in_buf);
                         const key = try SshParser.parseOpenSshPrivateKey(in_buf[0..n]);
@@ -127,7 +147,7 @@ pub fn main() !void {
                         const r = try Recipient.fromAgePrivateKey(allocator, line, file_key);
                         try recipients.append(allocator, r);
                     } else {
-                        std.debug.print("Unrecognized identity file format: {s}\n", .{file_name});
+                        std.debug.print("Unrecognized identity file format: {s}\n", .{file_name.inner});
                         exit(1);
                     }
                 }

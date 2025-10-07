@@ -4,149 +4,21 @@ const Io = std.Io;
 const time = std.time;
 const Allocator = std.mem.Allocator;
 const ArgIterator = std.process.ArgIterator;
+const ArrayList = std.ArrayList;
 const File = std.fs.File;
+
+const argz = @import("argz");
+const String = argz.String;
 
 const agez = @import("agez");
 const X25519 = agez.X25519;
 const bech32 = agez.bech32;
-const Arg = agez.cli.Arg;
 
-const Args = struct {
-    const Self = @This();
-
-    help: Arg = Arg.init("-h", "-help", "print this help message"),
-    output: Arg = Arg.init("-o", "-output", "output file for the private key"),
-    convert: Arg = Arg.init("-y", "", "convert an identity file to a recipients file"),
-
-    allocator: Allocator,
-
-    pub fn parse(self: *Self, iter: anytype) anyerror!void {
-        while (iter.next()) |arg| {
-            if (self.help.eql(arg)) {
-                try self.help.set(true);
-            } else if (self.output.eql(arg)) {
-                const out = iter.next() orelse return error.InvalidArgument;
-                try self.output.set(out);
-            } else if (self.convert.eql(arg)) {
-                const convert = iter.next() orelse return error.InvalidArgument;
-                try self.convert.set(convert);
-            } else {
-                std.debug.print("Invalid argument {s}\n", .{arg});
-                return error.InvalidArgument;
-            }
-        }
-
-        if (self.help.flag()) {
-            try self.printHelp(self.allocator);
-            exit(0);
-        }
-    }
-
-    pub fn printHelp(_: *Self, allocator: Allocator) !void {
-        var buf: [1024]u8 = undefined;
-        var stdout_writer = std.fs.File.stdout().writer(&buf);
-        const stdout = &stdout_writer.interface;
-
-        const header =
-            \\agez - age encryption
-            \\
-            \\ Usage:
-            \\    age-keygen [-o OUTPUT]
-            \\    age-keygen -y [-o OUTPUT] [INPUT]
-            ;
-
-        const arg_spacing = comptime blk: {
-            var max: usize = 0;
-            for (@typeInfo(Self).@"struct".fields) |field| {
-                if (field.type != Arg)  continue;
-                if (field.defaultValue()) |arg| {
-                    if (arg.long == null) continue;
-                    if (arg.long.?.len > max) max = arg.long.?.len;
-                }
-            }
-            break :blk max;
-        };
-
-        // this is completely unnecessary, but I wanted to try it out
-        const fields = @typeInfo(Self).@"struct".fields;
-        var options: std.io.Writer.Allocating = .init(allocator);
-        var writer = options.writer;
-        inline for (fields) |field| {
-            if (field.type != Arg)  continue;
-            if (field.defaultValue()) |arg| {
-                if (arg.short == null or arg.long == null) continue;
-                const spacing = arg_spacing - arg.long.?.len + 2;
-                try writer.print("    {s}, {s}{s}{s}\n",
-                    .{
-                        arg.short.?,
-                        arg.long.?,
-                        " " ** spacing,
-                        arg.description.?
-                    }
-                );
-            }
-        }
-
-        const options_text = try options.toOwnedSlice();
-        defer allocator.free(options_text);
-
-        // TOOD: footer
-        try stdout.print(
-            \\{s}
-            \\
-            \\Options:
-            \\{s}
-            , .{header, options_text});
-    }
+const Args2 = struct {
+    help: argz.Arg(bool) = .{ .description = "Prints the help text" },
+    output: argz.Arg(?String) = .{ .description = "Output private key to a path OUTPUT" },
+    convert: argz.Arg(?String) = .{ .description = "Convert an identity file to a recipients file" },
 };
-
-
-fn args(allocator: Allocator) !Args {
-    var iter = try ArgIterator.initWithAllocator(allocator);
-    defer iter.deinit();
-    _ = iter.skip(); // skip the program name
-
-    var a: Args =  .{ .allocator = allocator };
-    a.parse(&iter) catch |err| switch (err) {
-        error.InvalidArgument => exit(1),
-        else => return err
-    };
-    return a;
-}
-
-fn ts() ![22]u8 {
-    const timestamp = time.timestamp();
-
-    const datetime = time.epoch.EpochSeconds{ .secs = @intCast(timestamp) };
-
-    const days = datetime.getEpochDay();
-    const year_day = days.calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-
-    const year = year_day.year;
-    const month = month_day.month.numeric();
-    const day = month_day.day_index;
-
-    const day_secs = datetime.getDaySeconds();
-    const seconds = day_secs.getSecondsIntoMinute();
-    const minutes = day_secs.getMinutesIntoHour();
-    const hour = day_secs.getHoursIntoDay();
-
-    var buf: [22]u8 = undefined;
-    var writer: Io.Writer = .fixed(&buf);
-    _ = try writer.print(
-        "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}UTC",
-        .{
-            year,
-            month,
-            day + 1,
-            hour,
-            minutes,
-            seconds,
-        }
-    );
-    return buf;
-}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -156,9 +28,12 @@ pub fn main() !void {
     defer if (gpa.deinit() == .leak) { std.debug.print("Leak detected\n", .{}); };
     defer arena.deinit();
 
-    const _args = try args(allocator);
-    if (_args.convert.value()) |convert| {
-        var file = try std.fs.cwd().openFile(convert, .{.mode = .read_write});
+    var cli = argz.Parse(Args2).init(allocator);
+    defer cli.deinit();
+
+    const args = try cli.parse();
+    if (args.convert) |convert| {
+        var file = try std.fs.cwd().openFile(convert.inner, .{.mode = .read_write});
         var reader_buf: [4096]u8 = undefined;
         var reader: File.Reader = file.reader(&reader_buf);
         var writer_buf: [4096]u8 = undefined;
@@ -224,8 +99,8 @@ pub fn main() !void {
         var buf_upper: [90]u8 = undefined;
         const id = std.ascii.upperString(&buf_upper, identity_bech32);
         std.debug.print("Public key: {s}\n", .{recipient_bech32});
-        if (_args.output.value()) |output| {
-            var file = try std.fs.cwd().createFile(output, .{.mode = 0o644});
+        if (args.output) |output| {
+            var file = try std.fs.cwd().createFile(output.inner, .{.mode = 0o644});
             var writer_buf: [128]u8 = undefined;
             const file_writer = file.writer(&writer_buf);
             var writer: Io.Writer = file_writer.interface;
@@ -244,3 +119,38 @@ pub fn main() !void {
     }
 
 }
+
+fn ts() ![22]u8 {
+    const timestamp = time.timestamp();
+
+    const datetime = time.epoch.EpochSeconds{ .secs = @intCast(timestamp) };
+
+    const days = datetime.getEpochDay();
+    const year_day = days.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+
+    const year = year_day.year;
+    const month = month_day.month.numeric();
+    const day = month_day.day_index;
+
+    const day_secs = datetime.getDaySeconds();
+    const seconds = day_secs.getSecondsIntoMinute();
+    const minutes = day_secs.getMinutesIntoHour();
+    const hour = day_secs.getHoursIntoDay();
+
+    var buf: [22]u8 = undefined;
+    var writer: Io.Writer = .fixed(&buf);
+    _ = try writer.print(
+        "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}UTC",
+        .{
+            year,
+            month,
+            day + 1,
+            hour,
+            minutes,
+            seconds,
+        }
+    );
+    return buf;
+}
+

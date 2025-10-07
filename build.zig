@@ -12,7 +12,11 @@ pub fn build(b: *std.Build) !void {
     const test_step = b.step("test", "Run unit tests");
     const testkit_step = b.step("testkit", "Run testkit tests");
 
-    const libagez_mod = b.addModule("libagez", .{ .root_source_file = b.path("src/lib.zig") });
+    const argz = b.dependency("argz", .{ .target = target, .optimize = optimize });
+
+    const libagez_mod = b.addModule("libagez",
+        .{ .root_source_file = b.path("src/lib.zig") }
+    );
 
     const exe = b.addExecutable(.{
         .name = "agez",
@@ -23,6 +27,7 @@ pub fn build(b: *std.Build) !void {
         })
     });
     exe.root_module.addImport("agez", libagez_mod);
+    exe.root_module.addImport("argz", argz.module("argz"));
 
     b.installArtifact(exe);
 
@@ -35,6 +40,7 @@ pub fn build(b: *std.Build) !void {
         })
     });
     exe_keygen.root_module.addImport("agez", libagez_mod);
+    exe_keygen.root_module.addImport("argz", argz.module("argz"));
 
     b.installArtifact(exe_keygen);
 

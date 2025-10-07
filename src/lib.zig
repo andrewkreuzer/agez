@@ -5,7 +5,6 @@ const ArrayList = std.ArrayList;
 
 pub const age = @import("age.zig");
 pub const bech32 = @import("bech32.zig");
-pub const cli = @import("cli.zig");
 pub const ssh = @import("ssh/lib.zig");
 pub const X25519 = @import("X25519.zig");
 pub const AgeIo = @import("Io.zig");
@@ -16,7 +15,6 @@ pub const Recipient = @import("recipient.zig").Recipient;
 
 const armor = @import("armor.zig");
 const format = @import("format.zig");
-const Args = cli.Args;
 const Header = age.Header;
 
 const RecipientList = ArrayList(Recipient);
@@ -106,7 +104,6 @@ pub const AgeDecryptor = struct {
 
 test {
     _  = age;
-    _  = cli;
     _ = format;
     _ = bech32;
     _ = armor;
