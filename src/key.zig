@@ -1,6 +1,7 @@
 const Allocator = @import("std").mem.Allocator;
 const std = @import("std");
 const assert = std.debug.assert;
+const crypto = std.crypto;
 const Ed25519 = std.crypto.sign.Ed25519;
 
 const Rsa = @import("ssh/lib.zig").Rsa;
@@ -31,14 +32,19 @@ pub const Key = union(KeyType) {
     /// * Rsa.KeyPair
     /// * usize (generates a random key)
     pub fn init(allocator: Allocator, T: anytype) !Key {
-        switch (@TypeOf(T)) {
-            comptime_int, usize => return .{ .slice = .{ .k = try allocator.alloc(u8, T) }},
-            [32]u8 => return .{ .slice = .{ .k = try allocator.dupe(u8, &T) }},
-            []u8, []const u8 => return .{ .slice = .{ .k = try allocator.dupe(u8, T) }},
-            Ed25519.KeyPair => return .{ .ed25519 = T },
-            Rsa.KeyPair => return .{ .rsa = T },
+        return switch (@TypeOf(T)) {
+            comptime_int, usize => key: {
+                const k: Key = .{ .slice = .{ .k = try allocator.alloc(u8, T) } };
+                crypto.random.bytes(k.slice.k);
+
+                break :key k;
+            },
+            [32]u8 => .{ .slice = .{ .k = try allocator.dupe(u8, &T) }},
+            []u8, []const u8 => .{ .slice = .{ .k = try allocator.dupe(u8, T) }},
+            Ed25519.KeyPair => .{ .ed25519 = T },
+            Rsa.KeyPair => .{ .rsa = T },
             else => return error.UnsupportedKeyType,
-        }
+        };
     }
 
     /// Deallocates a Key ensuring the key
@@ -46,7 +52,7 @@ pub const Key = union(KeyType) {
     pub fn deinit(self: *const Self, allocator: Allocator) void {
         switch (self.*) {
             KeyType.slice => |*slice| {
-                std.crypto.secureZero(u8, slice.k);
+                crypto.secureZero(u8, slice.k);
                 allocator.free(slice.k);
                 if (slice.pk) |pk| { allocator.free(pk); }
             },
