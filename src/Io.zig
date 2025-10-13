@@ -99,7 +99,7 @@ pub fn read_passphrase(buf: []u8, confirm: bool) ![]u8 {
     }
     const p1 = buf[0..n];
     const p2 = buf[n..][0..n];
-    if (!mem.eql(u8, p1, p2))
+    if (confirm and !mem.eql(u8, p1, p2))
         return error.PassphraseMismatch;
 
     try std.posix.tcsetattr(tty.handle, linux.TCSA.NOW, term_orig);

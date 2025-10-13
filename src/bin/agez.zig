@@ -18,7 +18,6 @@ const IoOptions = AgeIo.Options;
 const Key = agez.Key;
 const AgeEncryptor = agez.AgeEncryptor;
 const AgeDecryptor = agez.AgeDecryptor;
-const PemDecoder = agez.ssh.PemDecoder;
 const Recipient = agez.Recipient;
 const X25519 = agez.X25519;
 
@@ -79,12 +78,12 @@ pub fn main() !void {
             const f: File = try fs.cwd().openFile(file_name.inner, .{});
             defer f.close();
 
-            var buf: [4096]u8 = undefined;
+            var buf: [1024]u8 = undefined;
             var reader = f.reader(&buf);
             const file = &reader.interface;
 
             const prefix = try file.peek(4);
-            if (mem.eql(u8, prefix, "age-")) {
+            if (mem.eql(u8, prefix, "age1")) {
 
                 while (file.takeDelimiterExclusive('\n')) |line| {
                     const recipient: Recipient = try .fromAgePublicKey(

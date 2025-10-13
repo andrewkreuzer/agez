@@ -74,7 +74,7 @@ pub const Version = enum {
 
     pub const prefix = "age-encryption.org/";
 
-    pub fn fromStr(str: []u8) Version {
+    pub fn fromStr(str: []const u8) Version {
         if (mem.eql(u8, str, prefix ++ "v1")) {
             return .v1;
         }

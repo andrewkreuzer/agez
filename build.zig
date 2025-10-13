@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) !void {
 
     const argz = b.dependency("argz", .{ .target = target, .optimize = optimize });
 
-    const libagez_mod = b.addModule("libagez",
+    const libagez_mod = b.addModule("agez",
         .{ .root_source_file = b.path("src/lib.zig") }
     );
 
