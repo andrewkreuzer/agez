@@ -30,7 +30,7 @@ pub fn toStanza(allocator: Allocator, args: [][]u8, body: []u8) ![]const u8 {
 pub fn fromPassphrase(allocator: Allocator, passphrase: []const u8, file_key: Key) !Recipient {
     var r = Recipient{ .type = .scrypt };
     const key: Key = try Key.init(allocator, passphrase);
-    try r.wrap(allocator, file_key, key);
+    try r.wrap(allocator, file_key, key, .{});
     return r;
 }
 
@@ -109,7 +109,7 @@ pub fn unwrap(allocator: Allocator, passphrase: []const u8, args: [][]u8, body: 
 /// Encrypts the file key in the recipients body
 /// and returns a new recipient with type, args, and body
 /// caller is responsible for deinit on the reciepient
-pub fn wrap(allocator: Allocator, file_key: Key, passphrase: Key) !Recipient {
+pub fn wrap(allocator: Allocator, file_key: Key, passphrase: Key, work_factor: u6) !Recipient {
     // scrypt derived key from the passphrase
     var key: [32]u8 = undefined;
     defer std.crypto.secureZero(u8, &key);
@@ -137,19 +137,12 @@ pub fn wrap(allocator: Allocator, file_key: Key, passphrase: Key) !Recipient {
     // the encrypted file key base64 encoded
     var body: [43]u8 = undefined;
 
-    _ = std.os.linux.getrandom(
-        salt[KEY_LABEL.len..],
-        salt.len,
-        0x0002 // GRND_RANDOM
-    );
+    std.crypto.random.bytes(salt[KEY_LABEL.len..]);
 
-    const pp = passphrase.key().bytes;
-    // TODO: make this configurable
-    const work_factor: u6 = 15;
     try scrypt.kdf(
         allocator,
         &key,
-        pp,
+        passphrase.key().bytes,
         &salt,
         .{.r=rounds, .p=parallization, .ln=work_factor}
     );

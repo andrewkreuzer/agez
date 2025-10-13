@@ -1,11 +1,12 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
+const isWhitespace = std.ascii.isWhitespace;
 const mem = std.mem;
 const window = std.mem.window;
 
-pub const ARMOR_BEGIN_MARKER = "-----BEGIN AGE ENCRYPTED FILE-----";
-pub const ARMOR_END_MARKER = "-----END AGE ENCRYPTED FILE-----";
+pub const header = "-----BEGIN AGE ENCRYPTED FILE-----";
+pub const footer = "-----END AGE ENCRYPTED FILE-----";
 
 // Follows RFC7468 (https://www.rfc-editor.org/rfc/rfc7468)
 // Generators MUST wrap the base64-encoded lines so that each line
@@ -14,33 +15,37 @@ pub const ARMOR_END_MARKER = "-----END AGE ENCRYPTED FILE-----";
 // boundary), and they MUST NOT emit extraneous whitespace.  Parsers MAY
 // handle other line sizes.  These requirements are consistent with PEM
 // [RFC1421].
-pub const ARMOR_COLUMNS_PER_LINE = 64;
-pub const ARMOR_BYTES_PER_LINE = ARMOR_COLUMNS_PER_LINE / 4 * 3;
+pub const columns_per_line = 64;
+pub const bytes_per_line = columns_per_line / 4 * 3;
 
 pub const ArmorError = error{
     ArmorInvalidMarker,
     ArmorInvalidLine,
     ArmorInvalidLineLength,
     ArmorNoEndMarker,
+    ArmorNoBeginMarker,
     ArmorDecodeError,
 };
 
-pub fn isArmorBegin(line: []u8) error{ArmorInvalidMarker}!bool {
-    if (line.len < ARMOR_BEGIN_MARKER.len) return false;
-    const slice = line[0..ARMOR_BEGIN_MARKER.len];
-    const prefix = ARMOR_BEGIN_MARKER[0..5];
-    const full_match = std.mem.eql(u8, slice, ARMOR_BEGIN_MARKER);
+pub fn isArmorBegin(line: []const u8) error{ArmorInvalidMarker}!bool {
+    if (line.len < header.len) return false;
+    const slice = line[0..header.len];
+    const prefix = header[0..5];
+    const full_match = std.mem.eql(u8, slice, header);
     if (std.mem.eql(u8, slice[0..5], prefix) and !full_match) {
         return error.ArmorInvalidMarker;
     }
     return full_match;
 }
 
-pub fn isArmorEnd(line: []u8) error{ArmorInvalidMarker}!bool {
-    if (line.len < ARMOR_END_MARKER.len) return false;
-    const slice = line[0..ARMOR_END_MARKER.len];
-    const prefix = ARMOR_END_MARKER[0..5];
-    const full_match = std.mem.eql(u8, slice, ARMOR_END_MARKER);
+pub fn isArmorEnd(line: []const u8) error{ArmorInvalidMarker}!bool {
+    if (line.len != footer.len) {
+        @branchHint(.likely);
+        return false;
+    }
+    const slice = line[0..footer.len];
+    const prefix = footer[0..5];
+    const full_match = std.mem.eql(u8, slice, footer);
     if (std.mem.eql(u8, slice[0..5], prefix) and !full_match) {
         return error.ArmorInvalidMarker;
     }
@@ -54,18 +59,23 @@ pub const Reader = struct {
     const Self = @This();
     input: *Io.Reader,
     interface: Io.Reader,
-    begin_marker: bool = false,
-    end_marker: bool = false,
+    state: State = .header,
     decode_err: ?anyerror = null,
     armor_err: ?ArmorError = null,
 
-    pub const MIN_BUFFER_SIZE = ARMOR_COLUMNS_PER_LINE + 10;
+    const State = enum {
+        header,
+        block,
+        footer,
+    };
 
     pub fn init(input: *Io.Reader, buffer: []u8) Self {
+        assert(buffer.len >= 48);
         return Self{
             .input = input,
             .interface = .{
                 .vtable = &.{
+                    .readVec = Reader.readVec,
                     .stream = Reader.stream,
                 },
                 .buffer = buffer,
@@ -74,6 +84,35 @@ pub const Reader = struct {
             },
         };
     }
+
+    pub fn readVec(r: *Io.Reader, data: [][]u8) Io.Reader.Error!usize {
+        const first = data[0];
+        if (first.len >= 48) {
+            var writer: Io.Writer = .{
+                .buffer = first,
+                .end = 0,
+                .vtable = &.{ .drain = Io.Writer.fixedDrain },
+            };
+            const limit: Io.Limit = .limited(writer.buffer.len - writer.end);
+            return r.vtable.stream(r, &writer, limit) catch |err| switch (err) {
+                error.WriteFailed => unreachable,
+                else => |e| return e,
+            };
+        }
+        try r.rebase(48);
+        var writer: Io.Writer = .{
+            .buffer = r.buffer,
+            .end = r.end,
+            .vtable = &.{ .drain = Io.Writer.fixedDrain },
+        };
+        const limit: Io.Limit = .limited(writer.buffer.len - writer.end);
+        r.end += r.vtable.stream(r, &writer, limit) catch |err| switch (err) {
+            error.WriteFailed => unreachable,
+            else => |e| return e,
+        };
+        return 0;
+    }
+
 
     fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
         const ar: *Self = @alignCast(@fieldParentPtr("interface", r));
@@ -84,68 +123,108 @@ pub const Reader = struct {
         if (in.buffer.len == 0)
             return error.EndOfStream;
 
-        var line = in.takeDelimiterExclusive('\n') catch |err| switch (err) {
-            error.StreamTooLong => return error.ReadFailed,
-            else => |e| return e,
-        };
+        var acc: usize = 0;
+        state: switch (ar.state) {
+            .header => {
+                while (in.takeDelimiterExclusive('\n')) |line| {
+                    if (isArmorBegin(line) catch |e| {
+                        ar.armor_err = e;
+                        return error.ReadFailed;
+                    }) {
+                        ar.state = .block;
+                        continue :state .block;
+                    }
+                    for (line) |b| if (!isWhitespace(b)) {
+                        ar.armor_err = error.ArmorInvalidLine;
+                        return error.ReadFailed;
+                    };
+                } else |err| switch (err) {
+                    else => |e| return e,
+                    error.StreamTooLong => return error.ReadFailed,
+                    error.EndOfStream => {
+                        ar.armor_err = error.ArmorNoBeginMarker;
+                        return error.ReadFailed;
+                    },
+                }
+            },
+            .block => {
+                const line_full = in.takeDelimiterExclusive('\n')
+                    catch |err| switch (err) {
+                        else => |e| return e,
+                        error.StreamTooLong => return error.ReadFailed,
+                        error.EndOfStream => {
+                            ar.armor_err = error.ArmorNoEndMarker;
+                            return error.ReadFailed;
+                    },
+                };
 
-        if (line.len > 0 and line[line.len - 1] == '\r') line = line[0..line.len - 1];
-        if (line.len > ARMOR_COLUMNS_PER_LINE) {
-            ar.armor_err = error.ArmorInvalidLineLength;
-            return error.ReadFailed;
-        }
+                const line = mem.trimEnd(u8, line_full, "\r");
 
-        if (!ar.begin_marker) {
-            if (isArmorBegin(line) catch |e| {
-                ar.armor_err = e;
-                return error.ReadFailed;
-            }) { ar.begin_marker = true; return 0; }
-
-            ar.armor_err = error.ArmorInvalidLine;
-            return error.ReadFailed;
-        }
-
-        if (ar.begin_marker and !ar.end_marker) {
-            if (line.len == 0) {
-                ar.armor_err = error.ArmorInvalidLine;
-                return error.ReadFailed;
-            }
-        }
-
-        if (!ar.end_marker) {
-            if (isArmorEnd(line) catch |e| {
-                ar.armor_err = e;
-                return error.ReadFailed;
-            }) { ar.end_marker = true; return 0; }
-        } else {
-            const whitespaceFn = std.ascii.isWhitespace;
-            for (line) |b| {
-                if (!whitespaceFn(b)) {
-                    ar.armor_err = error.ArmorInvalidLine;
+                if (line.len > columns_per_line) {
+                    ar.armor_err = error.ArmorInvalidLineLength;
                     return error.ReadFailed;
                 }
-            }
-            return 0;
+
+                const n = Decoder.calcSizeForSlice(line) catch |e| {
+                    ar.decode_err = e;
+                    ar.armor_err = error.ArmorInvalidLine;
+                    return error.ReadFailed;
+                };
+
+                const dest = limit.slice(try w.writableSliceGreedy(n));
+                Decoder.decode(dest[0..n], line) catch |e| switch (e) {
+                    else => { ar.decode_err = e; return error.WriteFailed; },
+                    error.InvalidCharacter,
+                    error.InvalidPadding => {
+                        ar.decode_err = e;
+                        ar.armor_err = error.ArmorInvalidLine;
+                        return error.ReadFailed;
+                    }
+                };
+
+                acc += n;
+                w.advance(n);
+
+                const next = in.peekDelimiterExclusive('\n') catch |err| switch (err) {
+                    else => |e| return e,
+                    error.StreamTooLong => return error.ReadFailed,
+                    error.EndOfStream => {
+                        ar.armor_err = error.ArmorNoEndMarker;
+                        return error.ReadFailed;
+                    },
+                };
+
+                if (mem.indexOf(u8, next, footer)) |_| {
+                    ar.state = .footer;
+                    continue :state .footer;
+                } else {
+                    if (line.len < columns_per_line) {
+                        ar.armor_err = error.ArmorInvalidLine;
+                        return error.ReadFailed;
+                    }
+                }
+            },
+            .footer => {
+                while (in.takeDelimiterExclusive('\n')) |line_full| {
+                    const line = mem.trimEnd(u8, line_full, "\r");
+
+                    if (isArmorEnd(line) catch |e| {
+                        ar.armor_err = e;
+                        return error.ReadFailed;
+                    }) return acc;
+
+                    for (line) |b| if (!isWhitespace(b)) {
+                        ar.armor_err = error.ArmorInvalidLine;
+                        return error.ReadFailed;
+                    };
+                } else |err| switch (err) {
+                    else => |e| return e,
+                    error.StreamTooLong => return error.ReadFailed,
+                }
+            },
         }
 
-        const n = Decoder.calcSizeForSlice(line) catch |e| {
-            ar.decode_err = e;
-            ar.armor_err = error.ArmorInvalidLine;
-            return error.ReadFailed;
-        };
-        const dest = limit.slice(try w.writableSliceGreedy(n));
-
-        Decoder.decode(dest[0..n], line) catch |e| switch (e) {
-            else => { ar.decode_err = e; return error.ReadFailed; },
-            error.InvalidCharacter,
-            error.InvalidPadding => {
-                ar.decode_err = e;
-                ar.armor_err = error.ArmorInvalidLine;
-                return error.ReadFailed;
-            }
-        };
-        w.advance(n);
-        return n;
+        return acc;
     }
 };
 
@@ -153,6 +232,7 @@ pub const Writer = struct {
     const Self = @This();
     output: *Io.Writer,
     interface: Io.Writer,
+    done: bool = false,
 
     pub fn init(w: *Io.Writer, buffer: []u8) Self {
         assert(buffer.len >= 48);
@@ -161,6 +241,7 @@ pub const Writer = struct {
             .interface = .{
                 .vtable = &.{
                     .drain = Writer.drain,
+                    .flush = Writer.flush,
                 },
                 .buffer = buffer,
                 .end = 0,
@@ -169,29 +250,40 @@ pub const Writer = struct {
     }
 
     pub fn begin(self: *Self) error{WriteFailed}!void {
-        return self.output.writeAll(ARMOR_BEGIN_MARKER ++ "\n");
+        return self.output.writeAll(header ++ "\n");
     }
 
     pub fn finish(self: *Self) error{WriteFailed}!void {
-        if (self.interface.end != 0) {
-            const end = self.interface.end;
-            const buffer = self.interface.buffer[0..end];
+        self.done = true;
+        try flush(&self.interface);
+        return self.output.writeAll(footer ++ "\n");
+    }
+
+    fn flush(w: *Io.Writer) error{WriteFailed}!void {
+        const aw: *Writer = @alignCast(@fieldParentPtr("interface", w));
+        if (!aw.done) {
+            const drainFn = w.vtable.drain;
+            while (w.end != 0) _ = try drainFn(w, &.{""}, 1);
+        }
+        if (aw.interface.end != 0) {
+            const end = aw.interface.end;
+            const buffer = aw.interface.buffer[0..end];
             var iter = window(u8, buffer, 48, 48);
             while (iter.next()) |line| {
-                const buf = try self.output.writableSliceGreedy(line.len);
+                const buf = try aw.output.writableSliceGreedy(line.len);
                 const result = Encoder.encode(buf, line);
-                self.output.advance(result.len);
-                _ = try self.output.write("\n");
+                aw.output.advance(result.len);
+                _ = try aw.output.write("\n");
             }
-            self.interface.end = 0;
+            aw.interface.end = 0;
         }
-        return self.output.writeAll(ARMOR_END_MARKER ++ "\n");
     }
 
     fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) error{WriteFailed}!usize {
         _ = splat;
         const aw: *Writer = @alignCast(@fieldParentPtr("interface", w));
         const output: *Io.Writer = aw.output;
+        if (aw.done) return error.WriteFailed;
 
         var acc: usize = 0;
         var i: usize = 0;
@@ -253,7 +345,8 @@ test Reader {
         ;
 
     var r: Io.Reader = .fixed(words_encoded);
-    var ar: Reader = .init(&r, &.{});
+    var buf: [48]u8 = undefined;
+    var ar: Reader = .init(&r, &buf);
     var buf_decode: [words.len]u8 = undefined;
     try ar.interface.readSliceAll(&buf_decode);
 
@@ -302,7 +395,8 @@ test "garbage before begin" {
         \\
         ;
     var r: std.Io.Reader = .fixed(words_encoded);
-    var ar: Reader = .init(&r, &.{});
+    var buf: [48]u8 = undefined;
+    var ar: Reader = .init(&r, &buf);
     var buf_decode: [8]u8 = undefined;
     try t.expectError(error.ReadFailed, ar.interface.readSliceAll(&buf_decode));
     try std.testing.expectError(error.ArmorInvalidLine, ar.armor_err orelse {});
@@ -320,7 +414,8 @@ test "garbage after begin" {
         \\garbage
         ;
     var r: std.Io.Reader = .fixed(words_encoded);
-    var ar: Reader = .init(&r, &.{});
+    var buf: [48]u8 = undefined;
+    var ar: Reader = .init(&r, &buf);
     var buf_decode: [256]u8 = undefined;
     try t.expectError(error.ReadFailed, ar.interface.readSliceAll(&buf_decode));
     try std.testing.expectError(error.ArmorInvalidLine, ar.armor_err orelse {});
@@ -385,7 +480,8 @@ test "decode" {
     };
     for (cases) |case| {
         var r: Io.Reader = .fixed(case.data);
-        var ar: Reader = .init(&r, &.{});
+        var buf: [48]u8 = undefined;
+        var ar: Reader = .init(&r, &buf);
         var buf_decode: [1024]u8 = undefined;
         const n = try ar.interface.readSliceShort(&buf_decode);
 

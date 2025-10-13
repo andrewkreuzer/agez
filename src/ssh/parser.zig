@@ -5,6 +5,7 @@ const Aes256 = std.crypto.core.aes.Aes256;
 const Ed25519 = std.crypto.sign.Ed25519;
 
 const ssh = @import("../ssh.zig");
+const pem = @import("pem.zig");
 const Rsa = @import("rsa.zig");
 const Io = @import("../Io.zig");
 const Key = @import("../key.zig").Key;
@@ -98,9 +99,8 @@ const SshEd25519PrivateKey = struct {
 };
 
 pub fn parseOpenSshPrivateKey(data: []u8) !Key {
-    var Decoder = PemDecoder{};
-    var out_buf: [PemDecoder.max_key_size]u8 = undefined;
-    const d = try Decoder.decode(&out_buf, data);
+    var out_buf: [4096]u8 = undefined;
+    const d = try pem.decode(&out_buf, data);
 
     const privat_key_auth_magic = "openssh-key-v1\x00";
     if (!mem.eql(u8, d[0..privat_key_auth_magic.len], privat_key_auth_magic)) {
@@ -116,7 +116,7 @@ pub fn parseOpenSshPrivateKey(data: []u8) !Key {
 
     const pk1 = blk: {
         if (!mem.eql(u8, enc_pk.ciphername, "none")) {
-            var buf: [PemDecoder.max_key_size]u8 = undefined;
+            var buf: [4096]u8 = undefined;
             try decryptPrivateKey(&buf, enc_pk);
             break :blk try parseIntoStruct(SshPrivateKeySpec, &buf);
         } else {

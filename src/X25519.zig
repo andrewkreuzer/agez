@@ -40,7 +40,7 @@ pub fn fromPublicKey(allocator: Allocator, s: []const u8, file_key: Key) !Recipi
     _ = try bech32.convertBits(public_key.slice.k, decoded.data, 5, 8, false);
 
     var recipient = Recipient{ .type = .X25519 };
-    try recipient.wrap(allocator, file_key, public_key);
+    try recipient.wrap(allocator, file_key, public_key, .{});
     return recipient;
 }
 
@@ -56,7 +56,7 @@ pub fn fromPrivateKey(allocator: Allocator, s: []const u8, file_key: Key) !Recip
     const public_key: Key = try Key.init(allocator, pk);
 
     var r = Recipient{ .type = .X25519 };
-    try r.wrap(allocator, file_key, public_key);
+    try r.wrap(allocator, file_key, public_key, .{});
     return r;
 }
 
@@ -184,11 +184,7 @@ pub fn wrap(allocator: Allocator, file_key: Key, public_key: Key) !Recipient {
     // the encrypted file key base64 encoded
     var body: [43]u8 = undefined;
 
-    _ = std.os.linux.getrandom(
-        &ephemeral_secret,
-        ephemeral_secret.len,
-        0x0002 // GRND_RANDOM
-    );
+    std.crypto.random.bytes(&ephemeral_secret);
 
     const pk = public_key.key().bytes;
 

@@ -3,7 +3,9 @@ const std = @import("std");
 const exit = std.posix.exit;
 const fs = std.fs;
 const Io = std.Io;
+const linux = std.os.linux;
 const mem = std.mem;
+const posix = std.posix;
 const File = fs.File;
 const FileReader = std.fs.File.Reader;
 const FileWriter = std.fs.File.Writer;
@@ -15,17 +17,19 @@ writer: FileWriter,
 output_tty: bool,
 
 pub const Options = struct {
+    input: ?[]const u8,
+    output: ?[]const u8,
     read_buffer: []u8,
     write_buffer: []u8,
 };
 
-pub fn init(input: ?[]const u8, output: ?[]const u8, options: Options) !Self {
-    var in: File = if (input) |path|
-        try fs.cwd().openFile(path, .{}) else std.fs.File.stdin();
+pub fn init(options: Options) !Self {
+    var in: File = if (options.input) |path|
+        try fs.cwd().openFile(path, .{}) else .stdin();
 
     const flags: fs.File.CreateFlags = .{.truncate = true};
-    var out: File = if (output) |path| 
-        try fs.cwd().createFile(path, flags) else std.fs.File.stdout();
+    var out: File = if (options.output) |path|
+        try fs.cwd().createFile(path, flags) else .stdout();
 
     return .{
         .input = in,
@@ -44,59 +48,61 @@ pub fn deinit(self: *Self) void {
     self.output.close();
 }
 
-pub fn openFile(file_name: []const u8) !File {
-    return try fs.cwd().openFile(file_name, .{});
-}
-
 pub fn readFirstLine(buf: []u8, file_name: []const u8) ![]u8 {
     const file = try fs.cwd().openFile(file_name, .{});
     defer file.close();
-    var buf_reader = file.reader(buf);
-    while (buf_reader.interface.takeDelimiterExclusive('\n')) |line| {
+
+    var reader = file.reader(buf);
+    while (reader.interface.takeDelimiterExclusive('\n')) |line| {
         if (line[0] == '#') continue;
         return line;
     } else |err| switch (err) {
-        error.EndOfStream, // stream ended not on a line break
-        error.StreamTooLong, // line could not fit in buffer
-        error.ReadFailed, // caller can check reader implementation for diagnostics
+        error.EndOfStream,
+        error.StreamTooLong,
+        error.ReadFailed,
         => |e| return e,
     }
 }
 
 pub fn read_passphrase(buf: []u8, confirm: bool) ![]u8 {
-    var buf_writer = std.fs.File.stdout().writer(buf);
-    const pwriter = &buf_writer.interface;
+    const base_prompt = "Enter passphrase: ";
+    const confirm_prompt = "Confirm passphrase: ";
+
+    var writer: Io.Writer = .fixed(buf);
 
     const tty = try std.fs.openFileAbsolute("/dev/tty", .{ .mode = .read_write });
     defer tty.close();
 
-    var rtty_buf: [4096]u8 = undefined;
-    const rtty = tty.reader(&rtty_buf);
-    var tty_reader = rtty.interface;
-    var wtty_buf: [4096]u8 = undefined;
-    const wtty = tty.writer(&wtty_buf);
-    var tty_writer = wtty.interface;
+    var tty_buf: [128]u8 = undefined;
+    var tty_in = tty.reader(&tty_buf);
+    var tty_out = tty.writer(&.{});
+    var tty_reader = &tty_in.interface;
+    var tty_writer = &tty_out.interface;
 
-    var term = try std.posix.tcgetattr(tty.handle);
+    var term = try posix.tcgetattr(tty.handle);
     const term_orig = term;
 
+    // Disable output to hide password input but
+    // keep nl to show enter was received
     term.lflag.ECHO = false;
     term.lflag.ECHONL = true;
-    try std.posix.tcsetattr(tty.handle, std.os.linux.TCSA.NOW, term);
+    try posix.tcsetattr(tty.handle, linux.TCSA.NOW, term);
 
-    _ = try tty_writer.write("Enter passphrase: ");
-    _ = try tty_reader.streamDelimiter(pwriter, '\n');
-    const p1 = pwriter.buffered();
-    pwriter.end = 0;
 
-    if (confirm) {
-        _ = try tty_writer.write("Confirm passphrase: ");
-        _ = try tty_reader.streamDelimiter(pwriter, '\n');
-        const p2 = pwriter.buffered();
-        if (!mem.eql(u8, p1, p2)) return error.PassphraseMismatch;
+    var n: usize = 0;
+    for (0..2) |i| {
+        const prompt = if (i == 0) base_prompt else confirm_prompt;
+        try tty_writer.writeAll(prompt);
+        n = try tty_reader.streamDelimiter(&writer, '\n');
+        if (!confirm) break;
+        tty_reader.toss(1);
     }
+    const p1 = buf[0..n];
+    const p2 = buf[n..][0..n];
+    if (!mem.eql(u8, p1, p2))
+        return error.PassphraseMismatch;
 
-    try std.posix.tcsetattr(tty.handle, std.os.linux.TCSA.NOW, term_orig);
+    try std.posix.tcsetattr(tty.handle, linux.TCSA.NOW, term_orig);
 
     return p1;
 }

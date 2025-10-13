@@ -1,19 +1,23 @@
 const std = @import("std");
-const mem = std.mem;
+const assert = std.debug.assert;
 const exit = std.posix.exit;
+const fs = std.fs;
+const mem = std.mem;
 const ArrayList = std.ArrayList;
 const File = std.fs.File;
+const Io = std.Io;
 
 const argz = @import("argz");
 const String = argz.String;
 
 const agez = @import("agez");
-const age = agez.age;
+const ssh = agez.ssh;
+const pem = agez.ssh.pem;
 const AgeIo = agez.AgeIo;
+const IoOptions = AgeIo.Options;
 const Key = agez.Key;
 const AgeEncryptor = agez.AgeEncryptor;
 const AgeDecryptor = agez.AgeDecryptor;
-const SshParser = agez.ssh.Parser;
 const PemDecoder = agez.ssh.PemDecoder;
 const Recipient = agez.Recipient;
 const X25519 = agez.X25519;
@@ -43,104 +47,118 @@ pub fn main() !void {
     defer cli.deinit();
     const args = try cli.parse();
 
+    const file_key: Key = try Key.init(allocator, 16);
+    defer file_key.deinit(allocator);
+
     const armored = args.armor;
     const decrypt = args.decrypt;
-    const file_key: Key = try Key.init(allocator, 16);
-    const options = AgeIo.Options {
-        .read_buffer = try allocator.alloc(u8, 4096),
-        .write_buffer = try allocator.alloc(u8, 4096),
+    var read_buffer: [4096]u8 = undefined;
+    var write_buffer: [4096]u8 = undefined;
+    const options: IoOptions = .{
+        .input = if (args.input) |i| i.inner else null,
+        .output = if (args.output) |o| o.inner else null,
+        .read_buffer = &read_buffer,
+        .write_buffer = &write_buffer,
     };
-    const output = if (args.output) |o| o.inner else null;
-    const input = if (args.input) |i| i.inner else null;
-    var Io: AgeIo = try .init(input, output, options);
-    defer {
-        Io.deinit();
-        allocator.free(options.read_buffer);
-        allocator.free(options.write_buffer);
-    }
-
-    if (Io.output_tty and !decrypt and !armored) {
-        std.debug.print(
-            \\Output is a tty, it's not recommended to write arbitrary data to the terminal
-            \\use -o, --output to specify a file or redirect stdout
-            \\
-            , .{});
-        exit(1);
-    }
+    var age_io: AgeIo = try .init(options);
+    defer age_io.deinit();
+    binaryOutputWarning(age_io.output_tty and !decrypt and !armored);
 
     var recipients: ArrayList(Recipient) = .empty;
-    if (args.recipient) |values| for (values.items) |recipient| {
-        const r = try Recipient.fromAgePublicKey(allocator, recipient.inner, file_key);
-        try recipients.append(allocator, r);
-    };
-    if (args.recipients_file) |files| for (files.items) |file_name| {
-        var buf: [4096]u8 = undefined;
-
-        const f: File = try AgeIo.openFile(file_name.inner);
-        defer f.close();
-        var file_buf: [4096]u8 = undefined;
-        var reader = f.reader(&file_buf);
-        const n = try reader.readStreaming(&buf);
-        if (n == 0) continue;
-
-        const prefix = buf[0..4];
-        if (mem.eql(u8, prefix, "ssh-")) {
-            const pk = try SshParser.parseOpenSshPublicKey(buf[0..n]);
-            const r = try Recipient.fromSshPublicKey(allocator, pk, file_key);
+    if (args.recipient) |values| {
+        for (values.items) |recipient| {
+            const r: Recipient = try .fromAgePublicKey(
+                allocator, recipient.inner, file_key
+            );
             try recipients.append(allocator, r);
-        } else if (mem.eql(u8, prefix, "age1")) {
-            var fbs = std.io.fixedBufferStream(buf[0..n]);
-            const r = fbs.reader();
-            var line_buf: [90]u8 = undefined;
-            var line_fbs = std.io.fixedBufferStream(&line_buf);
-            const writer = line_fbs.writer();
-            while (true) {
-                r.streamUntilDelimiter(writer, '\n', line_buf.len) catch |err| switch (err) {
+        }
+    }
+
+    if (args.recipients_file) |files| {
+        for (files.items) |file_name| {
+            const f: File = try fs.cwd().openFile(file_name.inner, .{});
+            defer f.close();
+
+            var buf: [4096]u8 = undefined;
+            var reader = f.reader(&buf);
+            const file = &reader.interface;
+
+            const prefix = try file.peek(4);
+            if (mem.eql(u8, prefix, "age-")) {
+
+                while (file.takeDelimiterExclusive('\n')) |line| {
+                    const recipient: Recipient = try .fromAgePublicKey(
+                        allocator, line, file_key
+                    );
+                    try recipients.append(allocator, recipient);
+                }else |err| switch (err) {
                     error.EndOfStream => break,
                     else => return err,
-                };
-                const line = line_fbs.getWritten();
-                const recipient = try Recipient.fromAgePublicKey(allocator, line, file_key);
+                }
+
+            } else if (mem.eql(u8, prefix, "ssh-")) {
+
+                var public_key: [1024]u8 = undefined;
+                const n = try file.readSliceShort(&public_key);
+                assert(n <= public_key.len);
+
+                const contents = public_key[0..n];
+                const pk = try ssh.Parser.parseOpenSshPublicKey(contents);
+                const recipient: Recipient = try .fromSshPublicKey(
+                    allocator, pk, file_key
+                );
                 try recipients.append(allocator, recipient);
-                try line_fbs.seekTo(0);
+
+            } else {
+                std.debug.print(
+                    "Unrecognized recipient file format: {s}\n",
+                    .{file_name.inner}
+                );
             }
-        } else {
-            std.debug.print("Unrecognized recipient file format: {s}\n", .{file_name.inner});
         }
-    };
+    }
 
     const identities: ?[]Key = switch (args.passphrase) {
-        true => blk: {
-            var id = try allocator.alloc(Key, 1);
+        true => ids: {
+
             var passphrase_buf: [128]u8 = undefined;
             const passphrase = try AgeIo.read_passphrase(&passphrase_buf, !decrypt);
             defer std.crypto.secureZero(u8, passphrase);
-            id[0] = try Key.init(allocator, passphrase);
-            const r = try Recipient.fromPassphrase(allocator, passphrase, file_key);
-            try recipients.append(allocator, r);
-            break :blk id;
+
+            var ids = try allocator.alloc(Key, 1);
+            ids[0] = try Key.init(allocator, passphrase);
+
+            const recipient: Recipient = try.fromPassphrase(
+                allocator, passphrase, file_key
+            );
+            try recipients.append(allocator, recipient);
+
+            break :ids ids;
         },
-        false => blk: {
+        false => ids: {
             if (args.identity) |files| {
                 var ids: ArrayList(Key) = .empty;
                 for (files.items) |file_name| {
                     var identity_buf: [256]u8 = undefined;
                     defer std.crypto.secureZero(u8, &identity_buf);
+
                     const line = try AgeIo.readFirstLine(&identity_buf, file_name.inner);
-                    const prefix = line[0..14];
                     if (line.len == 0) continue;
-                    if (mem.eql(u8, prefix[0..PemDecoder.header.len], PemDecoder.header)) {
-                        var in_buf: [PemDecoder.max_key_size]u8 = undefined;
-                        const f = try AgeIo.openFile(file_name.inner);
+
+                    const prefix = line[0..14];
+                    const bech_header = X25519.BECH32_HRP_PRIVATE[0..14];
+                    if (mem.eql(u8, prefix[0..pem.prefix.len], pem.prefix)) {
+                        var in_buf: [4096]u8 = undefined;
+                        const f = try std.fs.cwd().openFile(file_name.inner, .{});
                         defer f.close();
+
                         const n = try f.read(&in_buf);
-                        const key = try SshParser.parseOpenSshPrivateKey(in_buf[0..n]);
+                        const key = try ssh.Parser.parseOpenSshPrivateKey(in_buf[0..n]);
+
                         try ids.append(allocator, key);
                         const r = try Recipient.fromSshKey(allocator, key, file_key);
                         try recipients.append(allocator, r);
-                    } else if (
-                        mem.eql(u8, prefix, X25519.BECH32_HRP_PRIVATE[0..14])
-                    ) {
+                    } else if (mem.eql(u8, prefix, bech_header)) {
                         const key = try Key.init(allocator, line);
                         try ids.append(allocator, key);
 
@@ -151,15 +169,15 @@ pub fn main() !void {
                         exit(1);
                     }
                 }
-                break :blk try ids.toOwnedSlice(allocator);
-            } else break :blk null;
+                break :ids try ids.toOwnedSlice(allocator);
+            } else break :ids null;
         }
     };
     defer {
         for (recipients.items) |*r| { r.deinit(allocator); }
         recipients.deinit(allocator);
         if (identities) |ids| {
-            for (ids) |id| { id.deinit(allocator); }
+            for (ids) |key| { key.deinit(allocator); }
             allocator.free(ids);
         }
     }
@@ -169,13 +187,24 @@ pub fn main() !void {
         exit(1);
     }
 
-    const reader = &Io.reader.interface;
-    const writer = &Io.writer.interface;
+    const reader = &age_io.reader.interface;
+    const writer = &age_io.writer.interface;
     if (decrypt) {
         const decryptor: AgeDecryptor = .init(allocator, reader, writer);
         try decryptor.decrypt(identities.?);
     } else {
         const encryptor: AgeEncryptor = .init(allocator, reader, writer);
         try encryptor.encrypt(&file_key, recipients, armored);
+    }
+}
+
+fn binaryOutputWarning(show: bool) void {
+    if (show) {
+        std.debug.print(
+            \\Output is a tty, it's not recommended to write arbitrary data to the terminal
+            \\use -o, --output to specify a file or redirect stdout
+            \\
+            , .{});
+        exit(1);
     }
 }

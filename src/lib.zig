@@ -23,8 +23,8 @@ pub const AgeEncryptor = struct {
     const Self = @This();
 
     allocator: Allocator,
-    reader: *Io.Reader,
-    writer: *Io.Writer,
+    input: *Io.Reader,
+    output: *Io.Writer,
 
     pub fn init(
         allocator: Allocator,
@@ -33,8 +33,8 @@ pub const AgeEncryptor = struct {
     ) Self {
         return .{
             .allocator = allocator,
-            .reader = reader,
-            .writer = writer,
+            .input = reader,
+            .output = writer,
         };
     }
 
@@ -49,13 +49,18 @@ pub const AgeEncryptor = struct {
             .recipients = recipients,
             .allocator = self.allocator
         };
-        var buf: [1024]u8 = undefined;
-        var w: AgeWriter = .init(self.allocator, self.writer, armored, &buf);
+        var armored_buf: [4096]u8 = undefined;
+        var w: AgeWriter = .init(self.allocator, self.output, armored, &armored_buf);
 
-        if (armored) try w.armored_writer.begin();
+        if (armored)
+            try w.armored_writer.begin();
+
         try w.write(file_key, header);
-        try age.encrypt(file_key, self.reader, w.output);
-        if (armored) try w.armored_writer.finish();
+        try age.encrypt(file_key, self.input, w.output);
+
+        if (armored)
+            try w.armored_writer.finish();
+
     }
 };
 
@@ -79,14 +84,12 @@ pub const AgeDecryptor = struct {
     }
 
     pub fn decrypt(self: Self, identities: []Key) !void {
-        var buf: [1024]u8 = undefined;
-        var reader: AgeReader = .init(self.allocator, self.input, &buf);
+        var armored_buffer: [1024]u8 = undefined;
+        var reader: AgeReader = .init(
+            self.allocator, self.input, &armored_buffer
+        );
 
-        var header = reader.parse() catch |e| {
-            if (reader.armored_reader.armor_err) |err| return err;
-            if (reader.armored_reader.decode_err) |err| return err;
-            return e;
-        };
+        var header = try reader.parse();
         defer header.deinit(self.allocator);
 
         const file_key: Key = try header.unwrap(self.allocator, identities);
@@ -94,11 +97,7 @@ pub const AgeDecryptor = struct {
 
         try header.verify_hmac(&file_key);
 
-        age.decrypt(&file_key, reader.input, self.output) catch |e| {
-            if (reader.armored_reader.armor_err) |err| return err;
-            if (reader.armored_reader.decode_err) |err| return err;
-            return e;
-        };
+        try age.decrypt(&file_key, &reader, self.output);
     }
 };
 

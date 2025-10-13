@@ -13,6 +13,7 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
 const ssh = @import("ssh/lib.zig");
+const pem = ssh.pem;
 const Parser = ssh.Parser;
 const PemDecoder = ssh.PemDecoder;
 const Rsa = ssh.Rsa;
@@ -73,13 +74,13 @@ pub const rsa = struct {
             return error.InvalidSshFingerprint;
         }
 
-        var Decoder = PemDecoder{};
-        var out_buf: [PemDecoder.max_key_size]u8 = undefined;
-        const b = try Decoder.decode_no_pad(&out_buf, body);
+        var out_buf: [4096]u8 = undefined;
+        const b = try pem.decode_no_pad(&out_buf, body);
 
         const file_key: Key = .{
             .slice = .{ .k = try allocator.alloc(u8, 16) }
         };
+        errdefer file_key.deinit(allocator);
         try private_key.decryptOaep(file_key.slice.k, b, RSA_KEY_LABEL);
 
 
@@ -157,7 +158,7 @@ pub const ed25519 = struct {
     pub fn fromPublicKey(allocator: Allocator, pk: []const u8, file_key: Key) !Recipient {
         var r = Recipient{ .type = .@"ssh-ed25519" };
         const key = try Key.init(allocator, pk);
-        try r.wrap(allocator, file_key, key);
+        try r.wrap(allocator, file_key, key, .{});
         return r;
     }
 
@@ -308,11 +309,7 @@ pub const ed25519 = struct {
         // the encrypted file key base64 encoded
         var body: [43]u8 = undefined;
 
-        _ = std.os.linux.getrandom(
-            &ephemeral_secret,
-            ephemeral_secret.len,
-            0x0002 // GRND_RANDOM
-        );
+        std.crypto.random.bytes(&ephemeral_secret);
 
         const pk = public_key.key().bytes;
         const epk = try X25519.recoverPublicKey(ephemeral_secret);

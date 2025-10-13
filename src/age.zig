@@ -7,7 +7,9 @@ const mem = std.mem;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 
-const generate_hmac = @import("format.zig").generate_hmac;
+const format = @import("format.zig");
+const generate_hmac = format.generate_hmac;
+const AgeReader = format.Reader;
 const Key = @import("key.zig").Key;
 const Recipient = @import("recipient.zig").Recipient;
 
@@ -175,9 +177,13 @@ const Encryptor = struct {
 
 /// Decrypts the data from reader into writer
 /// using age's ChaCha20Poly1305 encryption scheme
-pub fn decrypt(key: *const Key, reader: *Io.Reader, writer: *Io.Writer) !void {
-    var decryptor: Decryptor = try .init(key, reader);
-    try decryptor.decrypt(writer);
+pub fn decrypt(key: *const Key, reader: *AgeReader, writer: *Io.Writer) !void {
+    var decryptor: Decryptor = try .init(key, reader.input);
+    decryptor.decrypt(writer) catch |err| {
+        if (reader.armored_reader.armor_err) |e| return e;
+        if (reader.armored_reader.decode_err) |e| return e;
+        return err;
+    };
 }
 
 const Decryptor = struct {
@@ -200,7 +206,7 @@ const Decryptor = struct {
         // the ChaCha20Poly1305 tag used to authenticate the payload
         // always the last 16 bytes of the ciphertext
         var tag: [chacha_tag_length]u8 = undefined;
-        crypto.secureZero(u8, &tag);
+        defer crypto.secureZero(u8, &tag);
 
         // additional data for ChaCha20Poly1305
         // age doesn't use this so we set it empty
@@ -214,7 +220,7 @@ const Decryptor = struct {
         // the key used to encrypt the payload
         // derived from the file key and the nonce
         var encryption_key: [32]u8 = undefined;
-        crypto.secureZero(u8, &encryption_key);
+        defer crypto.secureZero(u8, &encryption_key);
 
         const k = hkdf.extract(&self.nonce, self.key.slice.k);
         hkdf.expand(&encryption_key, "payload", k);
@@ -325,7 +331,8 @@ test "round trip" {
         var w: Io.Writer = .fixed(out);
 
         try encrypt(&key, &plaintext_r, &ciphertext_w);
-        try decrypt(&key, &ciphertext_r, &w);
+        var decryptor: Decryptor = try .init(&key, &ciphertext_r);
+        try decryptor.decrypt(&w);
 
         try std.testing.expectEqualStrings(c.plaintext, out);
     }

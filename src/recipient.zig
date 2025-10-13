@@ -97,13 +97,17 @@ pub const Recipient = struct {
         };
     }
 
+    pub const WrapOptions = struct {
+        scrypt_work_factor: u6 = 15,
+    };
+
     /// Encrypts the file key in the recipients body
     /// and populates the recipients type, args, and body
     /// caller is responsible for deinit on the reciepient
-    pub fn wrap(self: *Self, allocator: Allocator, file_key: Key, key: Key) !void {
+    pub fn wrap(self: *Self, allocator: Allocator, file_key: Key, key: Key, options: WrapOptions) !void {
         var new_recipient = switch (self.type) {
             .X25519 => try X25519.wrap(allocator, file_key, key),
-            .scrypt => try scrypt.wrap(allocator, file_key, key),
+            .scrypt => try scrypt.wrap(allocator, file_key, key, options.scrypt_work_factor),
             .@"ssh-ed25519" => try ssh.ed25519.wrap(allocator, file_key, key),
             .@"ssh-rsa" => try ssh.rsa.wrap(allocator, file_key, key.rsa.public_key),
         };
@@ -157,7 +161,7 @@ test "X25519 recipient" {
     try t.expectEqualSlices(u8, file_key.key().bytes, test_file_key);
 
     const key = try Key.init(allocator, public_key);
-    try recipient.wrap(allocator, file_key, key);
+    try recipient.wrap(allocator, file_key, key, .{});
 
     try t.expect(recipient.state == .wrapped);
 
@@ -182,13 +186,17 @@ test "scrypt recipient" {
     };
     recipient.args.?[0] = try allocator.dupe(u8, "rF0/NwblUHHTpgQgRpe5CQ");
     recipient.args.?[1] = try allocator.dupe(u8, "10");
+    errdefer allocator.free(recipient.args.?);
+    errdefer allocator.free(recipient.args.?[0]);
+    errdefer allocator.free(recipient.args.?[1]);
+    errdefer allocator.free(recipient.body.?);
 
     const id: Key = .{ .slice = .{ .k = &passphrase } };
     var file_key = try recipient.unwrap(allocator, id);
     try t.expect(recipient.state == .unwrapped);
     try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
 
-    try recipient.wrap(allocator, file_key, id);
+    try recipient.wrap(allocator, file_key, id, .{ .scrypt_work_factor = 6 });
     try t.expect(recipient.state == .wrapped);
 
     file_key.deinit(allocator);
@@ -218,6 +226,10 @@ test "ed25519 recipient" {
     };
     recipient.args.?[0] = try allocator.dupe(u8, "xk+TSA");
     recipient.args.?[1] = try allocator.dupe(u8, "xSh4cYHalYztTjXKULvJhGWIEp8gCSIQ/zx13jGzalw");
+    errdefer allocator.free(recipient.args.?);
+    errdefer allocator.free(recipient.args.?[0]);
+    errdefer allocator.free(recipient.args.?[1]);
+    errdefer allocator.free(recipient.body.?);
 
     const id: Key = try SshParser.parseOpenSshPrivateKey(&private_key);
     var file_key = try recipient.unwrap(allocator, id);
@@ -227,7 +239,7 @@ test "ed25519 recipient" {
     try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
 
     const pk: Key = try Key.init(allocator, id.ed25519.public_key.bytes);
-    try recipient.wrap(allocator, file_key, pk);
+    try recipient.wrap(allocator, file_key, pk, .{});
 
     try t.expect(recipient.state == .wrapped);
 
@@ -272,6 +284,9 @@ test "rsa recipient" {
         ),
     };
     recipient.args.?[0] = try allocator.dupe(u8, "UI4tAQ");
+    errdefer allocator.free(recipient.args.?);
+    errdefer allocator.free(recipient.args.?[0]);
+    errdefer allocator.free(recipient.body.?);
 
     var file_key = try recipient.unwrap(allocator, id);
 
@@ -279,7 +294,7 @@ test "rsa recipient" {
 
     try t.expectEqualSlices(u8, test_file_key, file_key.key().bytes);
 
-    try recipient.wrap(allocator, file_key, id);
+    try recipient.wrap(allocator, file_key, id, .{});
 
     try t.expect(recipient.state == .wrapped);
 

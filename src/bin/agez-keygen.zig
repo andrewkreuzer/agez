@@ -80,11 +80,7 @@ pub fn main() !void {
         var identity_bech32_buf: [90]u8 = undefined;
         defer std.crypto.secureZero(u8, &identity_bech32_buf);
 
-        _ = std.os.linux.getrandom(
-            &secret,
-            secret.len,
-            0x0002 // GRND_RANDOM
-        );
+        std.crypto.random.bytes(&secret);
 
         const recipient = try std.crypto.dh.X25519.recoverPublicKey(secret);
 
