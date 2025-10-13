@@ -114,9 +114,6 @@ const Encryptor = struct {
     nonce: [nonce_length]u8 = undefined,
     output: *Io.Writer,
 
-    read_buffer: [age_chunk_size]u8 = undefined,
-    write_buffer: [age_chunk_size + chacha_tag_length]u8 = undefined,
-
     pub fn init(key: *const Key, w: *Io.Writer) !Self {
         var self = Self{ .key = key, .output = w };
         _ = try w.write(&self.generateKeyNonce());
@@ -140,28 +137,31 @@ const Encryptor = struct {
         // the key used to encrypt the payload
         // derived from the file key and the nonce
         var encryption_key: [ChaCha20Poly1305.key_length]u8 = undefined;
-        crypto.secureZero(u8, &encryption_key);
+        defer crypto.secureZero(u8, &encryption_key);
 
         const k = hkdf.extract(&self.nonce, self.key.key().bytes);
         hkdf.expand(&encryption_key, "payload", k);
 
+        var read_buffer: [age_chunk_size]u8 = undefined;
+        var write_buffer: [age_chunk_size + chacha_tag_length]u8 = undefined;
+
         while (true) {
-            const read = try r.readSliceShort(&self.read_buffer);
-            if (read == 0) break;
-            if (read < self.read_buffer.len) {
+            const n = try r.readSliceShort(&read_buffer);
+            if (n == 0) break;
+            if (n < read_buffer.len) {
                 nonce[nonce.len-1] = 0x01;
             }
 
             ChaCha20Poly1305.encrypt(
-                self.write_buffer[0..read],
+                write_buffer[0..n],
                 &tag,
-                self.read_buffer[0..read],
+                read_buffer[0..n],
                 &ad,
                 nonce,
                 encryption_key
             );
 
-            _ = try self.output.write(self.write_buffer[0..read]);
+            _ = try self.output.write(write_buffer[0..n]);
             _ = try self.output.write(&tag);
             try incrementNonce(&nonce);
         }
@@ -193,9 +193,6 @@ const Decryptor = struct {
     nonce: [nonce_length]u8 = undefined,
     input: *Io.Reader,
 
-    read_buffer: [age_chunk_size + chacha_tag_length]u8 = undefined,
-    write_buffer: [age_chunk_size]u8 = undefined,
-
     pub fn init(key: *const Key, r: *Io.Reader) !Self {
         var self = Self{ .key = key, .input = r };
         try self.readKeyNonce();
@@ -225,17 +222,20 @@ const Decryptor = struct {
         const k = hkdf.extract(&self.nonce, self.key.slice.k);
         hkdf.expand(&encryption_key, "payload", k);
 
+        var read_buffer: [age_chunk_size + chacha_tag_length]u8 = undefined;
+        var write_buffer: [age_chunk_size]u8 = undefined;
+
         while (true) {
-            const n = try self.input.readSliceShort(&self.read_buffer);
+            const n = try self.input.readSliceShort(&read_buffer);
             if (n == 0) break;
             if (n < chacha_tag_length) return error.AgeDecryptFailure;
             if (n < age_chunk_size) nonce[nonce.len-1] = 0x01;
 
-            @memcpy(&tag, self.read_buffer[n-chacha_tag_length..n]);
+            @memcpy(&tag, read_buffer[n-chacha_tag_length..n]);
 
             ChaCha20Poly1305.decrypt(
-                self.write_buffer[0..n-chacha_tag_length],
-                self.read_buffer[0..n-chacha_tag_length],
+                write_buffer[0..n-chacha_tag_length],
+                read_buffer[0..n-chacha_tag_length],
                 tag,
                 &ad,
                 nonce,
@@ -244,7 +244,7 @@ const Decryptor = struct {
                 error.AuthenticationFailed => return error.AgeDecryptFailure,
                 else => return err,
             };
-            try writer.writeAll(self.write_buffer[0..n-chacha_tag_length]);
+            try writer.writeAll(write_buffer[0..n-chacha_tag_length]);
             try incrementNonce(&nonce);
         }
     }

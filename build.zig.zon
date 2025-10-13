@@ -1,9 +1,12 @@
 .{
     .name = .agez,
     .version = "0.0.0",
+    .fingerprint = 0x471c951f709a12a8,
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .argz = .{
-            .path = "../argz",
+            .url = "https://github.com/andrewkreuzer/argz/archive/59b48d7d4e3f8038aa4d43c739704e99113622d8.tar.gz",
+            .hash = "argz-0.0.0--t7AWiiuAAAZTPjb_cxa3aELx-2Mkan4uwg3LDfSyu2H",
         }
     },
     .paths = .{
@@ -13,5 +16,4 @@
         "LICENSE",
         "README.md",
     },
-    .fingerprint = 0x471c951f709a12a8,
 }

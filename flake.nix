@@ -8,26 +8,20 @@
     zig.url          = "github:mitchellh/zig-overlay";
   };
 
-  outputs = { nixpkgs, zig, flake-utils, ... }:
+  outputs = { nixpkgs, zig, flake-utils, ... }@inputs:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        overlays = [];
+        overlays = [
+          (final: prev: {
+            zig = inputs.zig.packages.${prev.system}."0.15.1";
+
+            agez = prev.callPackage ./nix/package.nix {};
+          })
+        ];
         pkgs = import nixpkgs {
           inherit system overlays;
         };
-        meta = {
-          description = "age encryption";
-          homepage = "https://github.com/andrewkreuzer/agez";
-          license = with pkgs.lib.licenses; [ mit unlicense ];
-          maintainers = [{
-            name = "Andrew Kreuzer";
-            email = "me@andrewkreuzer.com";
-            github = "andrewkreuzer";
-            githubId = 17596952;
-          }];
-        };
-      in
-      {
+      in rec {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             zig.packages.${system}."0.15.1"
@@ -37,6 +31,9 @@
             gdb
           ];
         };
+
+        packages.agez = pkgs.agez;
+        defaultPackage = packages.agez;
       }
     );
 }
